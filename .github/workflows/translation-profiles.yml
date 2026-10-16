@@ -1,0 +1,67 @@
+name: Translation profiles (Windows core)
+
+on:
+  push:
+    branches: [feat/translation-profiles]
+  pull_request:
+    paths:
+      - .github/workflows/translation-profiles.yml
+      - windows/src/**
+      - windows/tests/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: translation-profiles-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  profile-core:
+    name: Profile core self-test (JSON baseline)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PROFILE_CORE_BUILD_DIR: ${{ runner.temp }}/typetide-profile-core
+      PROFILE_CORE_LOG_DIR: ${{ runner.temp }}/typetide-profile-core-logs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure standalone core tests
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:PROFILE_CORE_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows/tests -B "$env:PROFILE_CORE_BUILD_DIR" -A x64 `
+              -DPROFILE_CORE_JSON_ONLY=ON 2>&1 |
+              Tee-Object -FilePath "$env:PROFILE_CORE_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build standalone core tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:PROFILE_CORE_BUILD_DIR" --config Debug `
+              --target ProfileCoreSelfTest --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:PROFILE_CORE_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run core tests (failures are not masked)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & "$env:PROFILE_CORE_BUILD_DIR/Debug/ProfileCoreSelfTest.exe" 2>&1 |
+              Tee-Object -FilePath "$env:PROFILE_CORE_LOG_DIR/self-test.log"
+          exit $LASTEXITCODE
+
+      - name: Preserve configure, build and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: profile-core-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROFILE_CORE_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7
