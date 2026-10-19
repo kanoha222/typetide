@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   profile-core:
-    name: Profile core self-test (JSON baseline)
+    name: Profile core self-test
     runs-on: windows-latest
     timeout-minutes: 10
     defaults:
@@ -45,7 +45,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:PROFILE_CORE_LOG_DIR" | Out-Null
           $PSNativeCommandUseErrorActionPreference = $false
           & cmake -S windows/tests -B "$env:PROFILE_CORE_BUILD_DIR" -A x64 `
-              -DPROFILE_CORE_JSON_ONLY=ON 2>&1 |
+              -DPROFILE_CORE_JSON_ONLY=OFF 2>&1 |
               Tee-Object -FilePath "$env:PROFILE_CORE_LOG_DIR/configure.log"
           exit $LASTEXITCODE
 

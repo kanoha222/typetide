@@ -2,10 +2,14 @@ cmake_minimum_required(VERSION 3.20)
 project(TypeTideProfileCoreTests LANGUAGES CXX)
 
 option(PROFILE_CORE_JSON_ONLY
-    "Run JSON boundary tests before the profile/store implementation exists" ON)
+    "Run JSON boundary tests before the profile/store implementation exists" OFF)
 
 add_executable(ProfileCoreSelfTest
     ../src/Json.cpp
+    ../src/Language.cpp
+    ../src/TranslationTypes.cpp
+    ../src/TranslationProfile.cpp
+    ../src/TranslationProfileStore.cpp
     ../src/ProfileSelfTest.cpp
 )
 

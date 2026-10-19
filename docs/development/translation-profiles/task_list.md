@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前状态：云端 Windows 已观察到 JSON-only 行为 RED，仅 `Json.cpp` / `Json.h` 最小修复进行中。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`，提交 [ea90e73](https://github.com/kanoha222/typetide/commit/ea90e73) 修复无效 CI context。Windows 独立测试已配置、编译并运行，30 个断言失败、退出码 1，**不是环境或构建失败**。GREEN、完整 profile codec/store/migration、Settings/UI/provider 功能与实测覆盖率仍未验证，Phase 1–5 整项任务均待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
+**当前状态：云端 Windows JSON 阶段已实证 GREEN（commit 439b9ff）；profile-store RED 脚手架已引入，完整 profile 行为 RED 待云端复跑验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。Windows 独立测试 JSON 阶段验证通过；现已放行 minimal RED scaffold（引入 TranslationTypes.cpp / TranslationProfile.cpp / TranslationProfileStore.cpp 最小可编译桩，禁用 JSON_ONLY）。GREEN、完整 profile codec/store/migration、Settings/UI/provider 功能与实测覆盖率仍未验证，Phase 1–5 整项任务均待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -22,7 +22,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 ## Phase 1 — RED → GREEN: profile model and migration
 
 - [ ] RED: add field/enum/ID/reference and size-boundary failures, schema number checks, full-consumption/depth/string/Unicode failures, multiline/emoji roundtrips, storage-state save blocking, and atomic-save failure cases.
-  - JSON-only subset: [actual Windows behavioral RED](https://github.com/kanoha222/typetide/actions/runs/39193075553/job/117869875089), after successful configure/build, ran `ProfileCoreSelfTest.exe` with 30 assertion failures and exit 1. Failure/pass categories are recorded in [environment status](environment_status.md). Full profile codec/store/migration tests have not run, so this broad RED item remains unchecked; only the authorized `Json.cpp` / `Json.h` fix is in progress, with GREEN unverified.
+  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。现已完成 profile-store RED 脚手架配置（切换至 PROFILE_CORE_JSON_ONLY=OFF，登记最小桩模块）。完整 profile codec/store/migration 测试的实际行为 RED 待云端复跑验证，随后再进入 Phase 1c 完整实现。
 - [ ] RED: prove migration binds each slot by action (including swapped/same actions), selection binds read, credential handling stays separate, and unsupported-but-valid profiles survive unchanged.
 - [ ] GREEN: implement decoupled types/profile/store with existing JSON APIs, unified limits, candidate validation, atomic persistence/publication, and all-path storage guards.
 - [ ] Record failing/passing evidence; refactor without changing legacy behavior.
