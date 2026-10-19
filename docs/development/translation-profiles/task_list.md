@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前状态：云端 Windows JSON 阶段已实证 GREEN（commit 439b9ff）；profile-store RED 脚手架已引入，完整 profile 行为 RED 待云端复跑验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。Windows 独立测试 JSON 阶段验证通过；现已放行 minimal RED scaffold（引入 TranslationTypes.cpp / TranslationProfile.cpp / TranslationProfileStore.cpp 最小可编译桩，禁用 JSON_ONLY）。GREEN、完整 profile codec/store/migration、Settings/UI/provider 功能与实测覆盖率仍未验证，Phase 1–5 整项任务均待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
+**当前状态：完整 Profile 测试集 112 failures 行为 RED 已实证（commit 708a593）；领域模型与存储编解码已实施，完整 GREEN 待云端复跑验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。Windows 独立测试实证 112 failure(s) 行为 RED；现已完成 TranslationProfile.cpp / TranslationProfileStore.cpp 完整领域逻辑实施（Phase 1c）。GREEN、Settings/UI/provider 集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -22,7 +22,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 ## Phase 1 — RED → GREEN: profile model and migration
 
 - [ ] RED: add field/enum/ID/reference and size-boundary failures, schema number checks, full-consumption/depth/string/Unicode failures, multiline/emoji roundtrips, storage-state save blocking, and atomic-save failure cases.
-  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。现已完成 profile-store RED 脚手架配置（切换至 PROFILE_CORE_JSON_ONLY=OFF，登记最小桩模块）。完整 profile codec/store/migration 测试的实际行为 RED 待云端复跑验证，随后再进入 Phase 1c 完整实现。
+  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。现已完成 Phase 1c 领域校验、能力判定、Defaults/Find/BoundProfile 与 v2/legacy 存储编解码完整实现，完整 GREEN 待云端复跑验证。
 - [ ] RED: prove migration binds each slot by action (including swapped/same actions), selection binds read, credential handling stays separate, and unsupported-but-valid profiles survive unchanged.
 - [ ] GREEN: implement decoupled types/profile/store with existing JSON APIs, unified limits, candidate validation, atomic persistence/publication, and all-path storage guards.
 - [ ] Record failing/passing evidence; refactor without changing legacy behavior.

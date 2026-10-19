@@ -1,24 +1,27 @@
 # 翻译配置：环境与进度状态
 
-状态日期：2026-10-19。**云端 Windows JSON 阶段已实证 GREEN（commit 439b9ff）；profile-store RED 脚手架已引入，完整 profile 行为 RED 待云端复跑验证。** [文档索引](README.md) · [待办清单](task_list.md)
+状态日期：2026-10-19。**完整 Profile 测试集 112 failures 行为 RED 已实证（commit 708a593）；领域模型与存储编解码已实施，完整 GREEN 待云端复跑验证。** [文档索引](README.md) · [待办清单](task_list.md)
 
 ## 当前证据
 
 - 基础设施 [PR #1](https://github.com/kanoha222/typetide/pull/1) 已合并。当前为 [draft PR #2](https://github.com/kanoha222/typetide/pull/2)，分支 `feat/translation-profiles-implementation`。
-- **JSON 阶段 GREEN 已实证**：提交 `439b9ff` 修复严格 JSON 边界后，云端 Windows 独立测试 job [Profile core self-test (JSON baseline)](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530) status=completed, conclusion=success；既有 Windows build + self-test 亦成功 ([job 117956814963](https://github.com/kanoha222/typetide/actions/runs/39221251010/job/117956814963))。macOS CI 当时为 in_progress，不声明通过。
-- **Profile-store RED 脚手架已就绪**：获得 coordinator 的 red-scaffold greenlight，引入最小可编译桩模块 `TranslationTypes.cpp`、`TranslationProfile.cpp`、`TranslationProfileStore.cpp`，在 `windows/tests/CMakeLists.txt` 与 `.github/workflows/translation-profiles.yml` 中登记源码并切换为 `PROFILE_CORE_JSON_ONLY=OFF`。
-- **预期行为 RED（尚未运行）**：基础枚举转换、默认配置数据与查找辅助函数的正向用例可能成功；依赖未实现的领域校验器（`Validate`、`ValidateCapability`）、存储编解码（`Decode`、`Encode`）及迁移逻辑的断言预期自然失败。已知空结果索引访问的守卫已有静态证明；当前脚手架的 Windows 编译、链接、断言结果与崩溃情况均尚未实际观测，不作普遍无崩溃保证。
-- 完整旧/新基线、provider mock、UIA E2E 与实测覆盖率仍未验证。不接入生产应用（ROOT `windows/CMakeLists.txt`、`Settings`、`App`、`UI`、`Translator`、`Json.cpp` 保持不变）。
+- **JSON 阶段 GREEN 已实证**：提交 `439b9ff`，独立测试 job `Profile core self-test` 成功；既有 Windows build + self-test 亦成功。
+- **完整行为 RED 已实证**：提交 `708a593` 在云端 Windows 独立测试 job [Profile core self-test](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843) 中成功完成 configure/build，随后运行 `ProfileCoreSelfTest.exe` 报告 **112 failure(s)、退出码 1**，无崩溃，严格 JSON 边界测试仍全部通过。这是完整的实际领域行为 RED。
+- **领域逻辑已实施（Phase 1c）**：
+  - `TranslationProfile.cpp`：实施严格 UTF-8 解析与 Unicode 空白/控制字符分析，name/prompt/id/model 规范与边界校验、完整枚举合法性检查、64 配置上限与唯一性、绑定引用完整性、BuiltIn 仅 faithful preset 可执行能力校验、`Defaults`、`Find`、`BoundProfile`。
+  - `TranslationProfileStore.cpp`：实施严格 `schemaVersion` 类型与整数范围校验、v2 schema 完整字段与枚举编解码、未版本化 legacy 配置（read/rewrite 独立语言、方向、风格、模型及 popup/replace 物理槽绑定）迁移逻辑。
+  - 生产边界隔离：ROOT 生产 `windows/CMakeLists.txt`、`Settings`、`App`、`UI`、`Translator`、`Json.cpp` 保持不变，未接入生产应用；无 `NewId` 桩定义。
+- 完整 GREEN 结果与实测覆盖率仍在待验证状态，不提前宣称通过。
 - 本地 SDK 路线因完整性不匹配已放弃；使用 GitHub Windows runner 预装 MSVC/SDK/CMake。
 
 ## 当前 CI 入口与边界
 
-- [工作流](../../../.github/workflows/translation-profiles.yml) 与[独立 CMake 项目](../../../windows/tests/CMakeLists.txt) 已切换至 `PROFILE_CORE_JSON_ONLY=OFF`，用于运行完整 `ProfileSelfTest.cpp` 测试套件。
-- configure/build 预期通过；运行阶段因领域逻辑未实现预期产生实际断言失败与非零退出码（行为 RED）。
+- [工作流](../../../.github/workflows/translation-profiles.yml) 与[独立 CMake 项目](../../../windows/tests/CMakeLists.txt) 维持 `PROFILE_CORE_JSON_ONLY=OFF`，用于运行完整 `ProfileSelfTest.cpp` 契约测试套件。
+- configure/build 预期通过；运行阶段验证领域实现与完整契约测试套件。
 - draft PR #2 已启用 auto-fix；不合并、不发版。不连接真实网络 provider、不执行模型、不注入密钥、不采集选中文字；公开日志仅使用合成数据，不包含私人机器诊断。
 
 ## 后续门槛（按顺序）
 
-1. 云端 Windows 跑出完整 profile 测试集的实际断言失败与非零退出码（实证完整行为 RED）。
-2. 在观察到完整行为 RED 后，再开展 Phase 1c 领域逻辑、校验器与 v2/legacy 存储编解码实现，走向 GREEN。
+1. 云端 Windows 独立测试复跑当前领域逻辑实现，验证完整契约测试套件（实证完整 GREEN）。
+2. 在验证完整 GREEN 后，保持生产与设置代码隔离，完成 Phase 1 代码与安全审查后，再规划后续接入。
 3. 补齐 macOS 最终状态、完整旧/新基线、mock/UIA、实测覆盖率和代码/安全审查；未执行项或不足如实保留，达到各项验收门槛后才更新任务状态。
