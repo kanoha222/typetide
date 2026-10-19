@@ -24,10 +24,17 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    env:
-      PROFILE_CORE_BUILD_DIR: ${{ runner.temp }}/typetide-profile-core
-      PROFILE_CORE_LOG_DIR: ${{ runner.temp }}/typetide-profile-core-logs
     steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-profile-core'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-profile-core-logs'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "PROFILE_CORE_BUILD_DIR=$buildDir"
+            "PROFILE_CORE_LOG_DIR=$logDir"
+          )
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
