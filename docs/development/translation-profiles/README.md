@@ -1,6 +1,6 @@
 # Translation profiles: implementation gates
 
-**Scope:** Windows only. **Implementation:** pending actual behavioral RED. 设计文档已完成；声明/测试与独立 CI 入口已准备，仅有静态审查，没有 C++ 编译、实际 RED/GREEN 或覆盖率证据。当前状态见[环境状态](environment_status.md)。
+**Scope:** Windows only. **Implementation:** JSON-only behavioral RED observed; minimal JSON fix in progress. 设计文档已完成；云端 Windows 独立测试已配置、编译并运行，GREEN、完整翻译配置功能与覆盖率仍未验证。当前状态见[环境状态](environment_status.md)。
 
 This directory records the approved Windows translation-profile design. macOS adaptation is deferred while retaining the same intended configuration semantics. Follow the repository [agent guide](../../../AGENTS.md).
 
@@ -19,9 +19,9 @@ Rules live in their owning document rather than being repeated throughout the se
 
 ## Current work boundary
 
-- Phase 0 documentation is complete. All 24 implementation/verification checklist items remain pending.
-- The [standalone Windows test project](../../../windows/tests/CMakeLists.txt) and [profile-core workflow](../../../.github/workflows/translation-profiles.yml) are test infrastructure only; they do not change the production build or implement profile behavior.
-- The user selected GitHub Windows CI with its preinstalled MSVC, Windows SDK and CMake. This bootstrap installs no tools and uses no real network providers, model execution, credentials or selected user text.
-- The workflow is authored locally and **has not run**. Actual evidence awaits coordinated publication of the independently reviewed branch/draft PR. Strict-JSON assertion failures are expected, not yet observed; unavailable tools or failed compilation are not behavioral RED.
-- Production implementation must wait for a successfully built test executable to demonstrate the intended behavioral failures. GREEN, full baseline/mock/UIA checks and measured coverage follow separately; this small workflow does not replace them.
-- The coordinator handles the authorized scoped commit/push/draft PR after code/security review. There is no automatic merge or release, and no private machine diagnostics, keys or user text may be published. Versions, settings and unrelated documentation remain unchanged.
+- Phase 0 documentation is complete. Standalone Windows configure/build/run is verified; all Phase 1–5 implementation/verification checklist items remain pending.
+- The [standalone Windows test project](../../../windows/tests/CMakeLists.txt) and [profile-core workflow](../../../.github/workflows/translation-profiles.yml) provide isolated test infrastructure. Current evidence is JSON-only, not full profile codec/store/migration verification.
+- The user selected GitHub Windows CI with its preinstalled MSVC, Windows SDK and CMake. The local SDK route was abandoned after an integrity mismatch, not retained as an active blocker. This bootstrap installs no tools and uses no real network providers, model execution, credentials or selected user text.
+- Foundation [PR #1](https://github.com/kanoha222/typetide/pull/1) is merged. Current [draft PR #2](https://github.com/kanoha222/typetide/pull/2) uses `feat/translation-profiles-implementation`; commit [ea90e73](https://github.com/kanoha222/typetide/commit/ea90e73) fixes invalid CI context. The [Windows job](https://github.com/kanoha222/typetide/actions/runs/39193075553/job/117869875089) completed configure/build, then ran `ProfileCoreSelfTest.exe`: 30 assertion failures, exit 1. This is actual behavioral RED, not an environment/build failure.
+- Only the core owner's authorized `Json.cpp` / `Json.h` fix is in progress. GREEN, full feature implementation, Settings/UI/provider checks, full baseline/mock/UIA and measured coverage remain unverified. Existing Windows app self-test passed; macOS was still pending when last read, with no final pass confirmed.
+- Auto-fix is enabled for draft PR #2; no merge or release is authorized. No private machine diagnostics, keys or user text may be published. Versions, settings and unrelated documentation remain unchanged.

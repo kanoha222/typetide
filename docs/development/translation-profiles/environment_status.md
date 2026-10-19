@@ -1,27 +1,24 @@
 # 翻译配置：环境与进度状态
 
-状态日期：2026-10-16。**业务实现前暂停，等待云端实际行为 RED；没有任何应用功能完成。** [文档索引](README.md) · [待办清单](task_list.md)
+状态日期：2026-10-19。**云端 Windows 已观察到 JSON-only 行为 RED；仅 JSON 最小修复进行中，GREEN 与翻译配置功能仍未验证。** [文档索引](README.md) · [待办清单](task_list.md)
 
 ## 当前证据
 
-- 设计文档阶段已完成，声明/测试文件已准备并经过静态审查；这不是 C++ 编译、运行时验证、RED/GREEN 或覆盖率证据。
-- 本地工具链不可用。本地获取的 Microsoft 清单未通过官方哈希核验，不得用于准备工具链；本次不访问或使用本地工具链下载目录，也不重试安装、下载或工具执行。
-- 用户已选择 GitHub Windows CI，使用 Windows runner 预装的 MSVC、Windows SDK 与 CMake，不另行安装工具。
-- 独立核心测试项目与工作流已在本地准备，**尚未发布或运行**。实际 CI 状态须在协调者完成独立审查并发布分支/draft PR 后据实填写；当前不宣称任何测试已失败或通过。
-- 24 项实现/验证任务仍全部待办；功能实现、旧测试基线、provider mock、UIA E2E 与实测覆盖率均未完成。
+- 基础设施 [PR #1](https://github.com/kanoha222/typetide/pull/1) 已合并。当前为 [draft PR #2](https://github.com/kanoha222/typetide/pull/2)，分支 `feat/translation-profiles-implementation`；提交 [ea90e73](https://github.com/kanoha222/typetide/commit/ea90e73) 修复了无效 CI context。
+- [实际失败的 Windows job](https://github.com/kanoha222/typetide/actions/runs/39193075553/job/117869875089) 已完成 configure/build，随后运行 `ProfileCoreSelfTest.exe`，报告 **30 个断言失败、退出码 1**。这是实际行为 **RED**，不是环境、配置或编译失败。
+- 失败类别：完整输入消费（full input consumption）、非法 JSON 数字/非有限值、无效 UTF-8/孤立代理项、未转义控制字符/值外 NUL、深度 >64。有效 Unicode、有效代理对、NUL roundtrip 与深度 64 用例仍通过；这些局部通过不代表整套 GREEN。
+- 既有 Windows 应用 self-test 已通过；macOS 在上次读取时仍为 pending，尚未确认最终结果。完整旧/新基线、provider mock、UIA E2E 与实测覆盖率仍未验证。
+- 已授权核心负责人仅修复 `windows/src/Json.cpp` / `windows/src/Json.h`，当前进行中。GREEN、完整 profile codec/store/migration、Settings、原生 UI 与 provider 功能实现均未验证，Phase 1–5 的整项任务仍待办。
+- 本地 SDK 路线因完整性不匹配已放弃，不再列为活动阻塞；当前使用 GitHub Windows runner 预装的 MSVC、Windows SDK 与 CMake。
 
-## 本次 CI 入口与边界
+## 当前 CI 入口与边界
 
-- [工作流](../../../.github/workflows/translation-profiles.yml) 在 `feat/translation-profiles` 推送及相关 PR 源码/测试路径变更时触发，仅有仓库内容读取权限、并发取消与有界超时。
-- [独立 CMake 项目](../../../windows/tests/CMakeLists.txt) 只构建控制台 `ProfileCoreSelfTest`，初始 `PROFILE_CORE_JSON_ONLY=ON`，使用现有 `Json.cpp` 与已准备的 `ProfileSelfTest.cpp`。不修改应用主构建或生产源码。
-- 工作流分别保留 configure/build/self-test 日志，即使失败也上传已有日志；不忽略非零退出码，也不把预期失败改成成功。
-- 当前预计现有 JSON 解析器会触发严格边界断言失败，但**实际行为 RED 尚未观察到**。配置、编译或工具链错误不得当作行为 RED。
-- 不连接真实网络 provider，不执行模型，不注入密钥，不采集选中文字；公开文件和日志只能包含测试基础设施与合成测试数据，不包含私人机器诊断。
-- 既有主 CI 在 PR 上继续负责原有 Windows 应用 self-test 与 macOS 检查；本工作流不重复整套基线，也不代替尚未执行的 mock/UIA/覆盖率验证。
+- [工作流](../../../.github/workflows/translation-profiles.yml) 与[独立 CMake 项目](../../../windows/tests/CMakeLists.txt) 提供隔离的控制台测试入口；本次证据来自 `PROFILE_CORE_JSON_ONLY=ON`，不是完整 profile/store/migration 测试的 RED 或 GREEN。
+- configure/build/self-test 证据分开记录；不忽略非零退出码，不把预期失败改成成功。JSON-only RED 仅解除 JSON 最小修复的等待条件，不完成 Phase 1 的广泛 RED 清单。
+- draft PR #2 已启用 auto-fix；不合并、不发版。不连接真实网络 provider、不执行模型、不注入密钥、不采集选中文字；公开日志仅使用合成数据，不包含私人机器诊断。
 
-## 恢复门槛（按顺序）
+## 后续门槛（按顺序）
 
-1. 协调者完成代码/安全独立审查，再按用户授权发布限定文件并创建 draft PR；不合并、不发版，不上传密钥、用户文本或私人机器诊断。
-2. 在 Windows runner 上成功配置并构建独立测试，运行控制台程序，检查真实断言与非零退出码；只有目标行为的预期失败才记为 RED。
-3. 核心负责人依据实际 RED 进行最小实现，逐步将 profile/store/Language 等实现源码接入独立目标，并在适当阶段关闭 JSON-only，验证完整核心测试的 GREEN。
-4. 执行旧/新基线、mock/UIA、实测覆盖率和代码/安全审查；未执行项或不足如实保留，达到验收门槛后再更新任务状态。
+1. 核心负责人完成限定 JSON 修复后，以云端 Windows 复跑结果确认 JSON-only GREEN；当前不得预先宣称通过。
+2. 完整 profile codec/store/migration 仍须先取得各自行为 RED，再进行对应实现并验证 GREEN；Settings/UI/provider 功能与集成同样保留待验证状态。
+3. 补齐 macOS 最终状态、完整旧/新基线、mock/UIA、实测覆盖率和代码/安全审查；未执行项或不足如实保留，达到各项验收门槛后才更新任务状态。

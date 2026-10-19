@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前阻塞：等待云端实际行为 RED，业务实现前暂停。** 设计文档已完成；声明/测试文件与独立 Windows CI 入口已准备，仅经过静态审查。用户已选择使用 GitHub Windows runner 的预装工具链；工作流尚未发布运行，没有 C++ 编译、实际 RED/GREEN 或覆盖率证据。严格 JSON 断言预期失败不等于已观察到失败；缺少工具链、配置或编译失败均**不是行为 RED**。详见[环境状态](environment_status.md)。以下 24 项实现/验证任务全部保持待办；文档地图见[索引](README.md)。
+**当前状态：云端 Windows 已观察到 JSON-only 行为 RED，仅 `Json.cpp` / `Json.h` 最小修复进行中。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`，提交 [ea90e73](https://github.com/kanoha222/typetide/commit/ea90e73) 修复无效 CI context。Windows 独立测试已配置、编译并运行，30 个断言失败、退出码 1，**不是环境或构建失败**。GREEN、完整 profile codec/store/migration、Settings/UI/provider 功能与实测覆盖率仍未验证，Phase 1–5 整项任务均待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -15,12 +15,14 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 
 ## Pre-code prerequisite — environment and baseline
 
-- [ ] Verify the GitHub Windows runner's preinstalled MSVC, Windows SDK and CMake with actual standalone configure/build/run evidence. Coverage tooling remains unverified; do not install or download tools in this bootstrap.
-- [ ] Record existing build/self-test/mock/UIA baseline and concrete environment blockers. Keep versions/releases/settings unchanged outside the approved implementation.
+- [x] Verify the GitHub Windows runner's preinstalled MSVC, Windows SDK and CMake with actual standalone configure/build/run evidence ([JSON-only RED job](https://github.com/kanoha222/typetide/actions/runs/39193075553/job/117869875089)). Coverage tooling remains unverified; do not install or download tools in this bootstrap.
+- [ ] Record the complete existing build/self-test/mock/UIA baseline and remaining verification gaps. Keep versions/releases/settings unchanged outside the approved implementation.
+  - Existing Windows app self-test passed; macOS was still pending when last read, with no final pass confirmed. Full baseline/mock/UIA/coverage evidence remains pending. The local SDK route was abandoned after an integrity mismatch; cloud Windows is the active route, not an unresolved local-install blocker.
 
 ## Phase 1 — RED → GREEN: profile model and migration
 
 - [ ] RED: add field/enum/ID/reference and size-boundary failures, schema number checks, full-consumption/depth/string/Unicode failures, multiline/emoji roundtrips, storage-state save blocking, and atomic-save failure cases.
+  - JSON-only subset: [actual Windows behavioral RED](https://github.com/kanoha222/typetide/actions/runs/39193075553/job/117869875089), after successful configure/build, ran `ProfileCoreSelfTest.exe` with 30 assertion failures and exit 1. Failure/pass categories are recorded in [environment status](environment_status.md). Full profile codec/store/migration tests have not run, so this broad RED item remains unchecked; only the authorized `Json.cpp` / `Json.h` fix is in progress, with GREEN unverified.
 - [ ] RED: prove migration binds each slot by action (including swapped/same actions), selection binds read, credential handling stays separate, and unsupported-but-valid profiles survive unchanged.
 - [ ] GREEN: implement decoupled types/profile/store with existing JSON APIs, unified limits, candidate validation, atomic persistence/publication, and all-path storage guards.
 - [ ] Record failing/passing evidence; refactor without changing legacy behavior.
