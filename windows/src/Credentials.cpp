@@ -4,11 +4,21 @@
 
 namespace {
 constexpr wchar_t kTarget[] = L"TypeTide/OpenAICompatibleApiKey";
+credentials::StoreBackend* g_testBackend = nullptr;
 }
 
 namespace credentials {
 
+void SetStoreBackendForTesting(StoreBackend* backend) {
+    g_testBackend = backend;
+}
+
+StoreBackend* GetStoreBackendForTesting() {
+    return g_testBackend;
+}
+
 std::string LoadCloudApiKey() {
+    if (g_testBackend) return g_testBackend->LoadLegacyFixedKey();
     PCREDENTIALW credential = nullptr;
     if (!CredReadW(kTarget, CRED_TYPE_GENERIC, 0, &credential)) return {};
 
@@ -22,6 +32,10 @@ std::string LoadCloudApiKey() {
 }
 
 bool SaveCloudApiKey(const std::string& key) {
+    if (g_testBackend) {
+        return key.empty() ? g_testBackend->DeleteLegacyFixedKey()
+                           : g_testBackend->SaveLegacyFixedKey(key);
+    }
     if (key.empty()) {
         return CredDeleteW(kTarget, CRED_TYPE_GENERIC, 0) || GetLastError() == ERROR_NOT_FOUND;
     }
@@ -34,6 +48,29 @@ bool SaveCloudApiKey(const std::string& key) {
     credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
     credential.UserName = const_cast<LPWSTR>(L"TypeTide");
     return CredWriteW(&credential, 0) != FALSE;
+}
+
+std::string LoadKey(const std::string& ref) {
+    if (!IsValidRef(ref) || !g_testBackend) return {};
+    return g_testBackend->LoadKey(ref);
+}
+
+bool StageKey(const std::string& ref, const std::string& key) {
+    if (!IsValidRef(ref) || key.empty() || !g_testBackend) return false;
+    return g_testBackend->StageKey(ref, key);
+}
+
+bool DeleteKey(const std::string& ref) {
+    if (!IsValidRef(ref) || !g_testBackend) return false;
+    return g_testBackend->DeleteKey(ref);
+}
+
+std::string LoadLegacyFixedKey() {
+    return g_testBackend ? g_testBackend->LoadLegacyFixedKey() : std::string{};
+}
+
+bool DeleteLegacyFixedKey() {
+    return g_testBackend && g_testBackend->DeleteLegacyFixedKey();
 }
 
 } // namespace credentials

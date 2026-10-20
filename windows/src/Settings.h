@@ -5,25 +5,17 @@
 #pragma once
 #include <windows.h>
 #include "Language.h"
+#include "TranslationProfile.h"
+#include "TranslationTypes.h"
+#include <cstdint>
 #include <string>
 #include <vector>
-
-enum class TranslationBackend { BuiltIn, Ollama, OpenAI };
 
 /// 划词触发方式
 enum class SelectionTrigger {
     None,  // 仅快捷键
     Icon,  // 划词后显示小图标，点击翻译
     Auto,  // 划词后直接弹出翻译
-};
-
-enum class ShortcutAction {
-    SmartPopup,
-    NativePopup,
-    ForeignPopup,
-    SmartReplace,
-    NativeReplace,
-    ForeignReplace,
 };
 
 enum class StorageState {
@@ -41,6 +33,20 @@ struct Hotkey {
     std::wstring displayString() const;
     bool isConfigured() const { return vk != 0; }
     bool operator==(const Hotkey&) const = default;
+};
+
+struct SettingsSnapshot {
+    ProfileConfiguration profileConfig;
+    uint64_t connectionEpoch = 0;
+    TranslationBackend backend = TranslationBackend::BuiltIn;
+    std::string ollamaHost;
+    int ollamaPort = 11434;
+    std::string ollamaModel;
+    std::string openAIBaseURL;
+    std::string openAIModel;
+    std::string openAIKey; // Resolved secret: memory only, never serialized/logged.
+    std::string openAICredentialRef;
+    bool hasCompletedFirstLaunch = false;
 };
 
 struct Settings {
@@ -81,10 +87,19 @@ struct Settings {
     bool hasCompletedFirstLaunch = false;
     long long lastUpdateCheck = 0;  // Unix 秒
 
-    // --- 存储状态 ---
+    // 翻译配置集合（v2 核心）
+    ProfileConfiguration profileConfig = profiles::Defaults();
+
+    // --- 存储与事务状态 ---
     StorageState storageState() const { return storageState_; }
     const std::string& storageError() const { return storageError_; }
     bool isReadOnly() const { return storageState_ != StorageState::Ready; }
+    uint64_t connectionEpoch() const { return connectionEpoch_; }
+    const std::string& credentialRef() const { return credentialRef_; }
+
+    // --- 事务提交与快照 ---
+    bool commit(const Settings& candidate, std::string* error = nullptr);
+    SettingsSnapshot snapshot() const;
 
     // --- 持久化 ---
     static Settings& shared();
@@ -96,4 +111,6 @@ struct Settings {
 private:
     StorageState storageState_ = StorageState::Ready;
     std::string storageError_;
+    uint64_t connectionEpoch_ = 0;
+    std::string credentialRef_;
 };

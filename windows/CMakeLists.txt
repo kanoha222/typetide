@@ -11,6 +11,9 @@ add_executable(TypeTide WIN32
     src/LocalDiagnostics.cpp
     src/Json.cpp
     src/Language.cpp
+    src/TranslationTypes.cpp
+    src/TranslationProfile.cpp
+    src/TranslationProfileStore.cpp
     src/Settings.cpp
     src/Credentials.cpp
     src/Clipboard.cpp

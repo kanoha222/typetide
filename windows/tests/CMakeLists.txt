@@ -35,6 +35,9 @@ add_executable(NativeStorageSelfTest
     ../src/Json.cpp
     ../src/Language.cpp
     ../src/Log.cpp
+    ../src/TranslationTypes.cpp
+    ../src/TranslationProfile.cpp
+    ../src/TranslationProfileStore.cpp
     ../src/Settings.cpp
     TestCredentialsDouble.cpp
     NativeStorageFixture.cpp
@@ -55,4 +58,37 @@ target_link_libraries(NativeStorageSelfTest PRIVATE
     shell32
     ole32
     advapi32
+)
+
+add_executable(NativeTransactionSelfTest
+    ../src/Json.cpp
+    ../src/Language.cpp
+    ../src/Log.cpp
+    ../src/TranslationTypes.cpp
+    ../src/TranslationProfile.cpp
+    ../src/TranslationProfileStore.cpp
+    ../src/Settings.cpp
+    NativeStorageFixture.cpp
+    TestCredentialFacade.cpp
+    TestCredentialStoreSeam.cpp
+    NativeTransactionSupport.cpp
+    NativeTransactionMigrationTests.cpp
+    NativeTransactionSelfTest.cpp
+)
+
+target_compile_features(NativeTransactionSelfTest PRIVATE cxx_std_20)
+set_target_properties(NativeTransactionSelfTest PROPERTIES CXX_EXTENSIONS OFF)
+target_compile_definitions(NativeTransactionSelfTest PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+if(MSVC)
+    target_compile_options(NativeTransactionSelfTest PRIVATE /utf-8 /EHsc /W4)
+    target_compile_options(NativeTransactionSelfTest PRIVATE /FIcstring /FIcstdlib)
+endif()
+
+# No production Credentials.cpp or WinCred import library in this target.
+# TestCredentialFacade.cpp supplies every credentials::* symbol at link time.
+target_link_libraries(NativeTransactionSelfTest PRIVATE
+    user32
+    shell32
+    ole32
 )

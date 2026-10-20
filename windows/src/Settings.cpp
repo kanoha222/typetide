@@ -374,3 +374,27 @@ bool Settings::save() const {
 
     return writeTempAndReplace(filePath(), json::Value(std::move(root)).dump());
 }
+
+bool Settings::commit(const Settings& candidate, std::string* error) {
+    // RED scaffold only. Do not publish, persist or access credentials here.
+    (void)candidate;
+    if (error) *error = "NotReady";
+    return false;
+}
+
+SettingsSnapshot Settings::snapshot() const {
+    // RED value shell only: committed-state isolation is deliberately not implemented.
+    SettingsSnapshot snap;
+    snap.profileConfig = profileConfig;
+    snap.connectionEpoch = connectionEpoch_;
+    snap.backend = backend;
+    snap.ollamaHost = ollamaHost;
+    snap.ollamaPort = ollamaPort;
+    snap.ollamaModel = ollamaModel;
+    snap.openAIBaseURL = openAIBaseURL;
+    snap.openAIModel = openAIModel;
+    snap.openAIKey = openAIKey;
+    snap.openAICredentialRef = credentialRef_;
+    snap.hasCompletedFirstLaunch = hasCompletedFirstLaunch;
+    return snap;
+}
