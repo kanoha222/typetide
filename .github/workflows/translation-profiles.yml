@@ -72,3 +72,58 @@ jobs:
           path: ${{ env.PROFILE_CORE_LOG_DIR }}/*.log
           if-no-files-found: warn
           retention-days: 7
+
+  native-storage:
+    name: Native settings storage self-test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-native-storage'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-native-storage-logs'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "NATIVE_STORAGE_BUILD_DIR=$buildDir"
+            "NATIVE_STORAGE_LOG_DIR=$logDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure standalone native storage tests
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:NATIVE_STORAGE_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows/tests -B "$env:NATIVE_STORAGE_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_STORAGE_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build standalone native storage tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:NATIVE_STORAGE_BUILD_DIR" --config Debug `
+              --target NativeStorageSelfTest --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_STORAGE_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run native storage tests (failures are not masked)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & "$env:NATIVE_STORAGE_BUILD_DIR/Debug/NativeStorageSelfTest.exe" 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_STORAGE_LOG_DIR/self-test.log"
+          exit $LASTEXITCODE
+
+      - name: Preserve configure, build and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-storage-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_STORAGE_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7
