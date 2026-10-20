@@ -2,8 +2,9 @@
 #include "Credentials.h"
 #include "Json.h"
 #include "Util.h"
+#include <cmath>
 #include <fstream>
-#include <sstream>
+#include <limits>
 
 std::wstring Hotkey::displayString() const {
     if (!isConfigured()) return L"Not set";
@@ -40,25 +41,92 @@ std::wstring Settings::filePath() {
     return util::AppDataDir() + L"\\settings.json";
 }
 
-void Settings::load() {
-    std::ifstream f(filePath(), std::ios::binary);
-    if (!f) return;
-    f.seekg(0, std::ios::end);
-    const auto length = f.tellg();
-    if (length < 0 || length > 1024 * 1024) {
+namespace {
+
+bool checkFileAttributes(const std::wstring& path, StorageState& state, std::string& err) {
+    DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        DWORD e = GetLastError();
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) {
+            state = StorageState::Ready;
+            err.clear();
+            return false;
+        }
+        state = StorageState::IoError;
+        err = "access error";
+        return false;
+    }
+    return true;
+}
+
+bool readFileContent(const std::wstring& path, std::string& out,
+                     StorageState& state, std::string& err) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f.is_open()) {
+        state = StorageState::IoError;
+        err = "cannot open file";
+        return false;
+    }
+    const auto endPos = f.tellg();
+    if (endPos < 0) {
+        state = StorageState::IoError;
+        err = "seek error";
+        return false;
+    }
+    const auto len = static_cast<size_t>(endPos);
+    if (len == 0) {
+        state = StorageState::Invalid;
+        err = "empty file";
+        return false;
+    }
+    if (len > 1024 * 1024) {
+        state = StorageState::Invalid;
+        err = "refusing invalid file size";
         util::Log("settings: refusing invalid file size");
-        return;
+        return false;
     }
     f.seekg(0, std::ios::beg);
-    std::stringstream ss;
-    ss << f.rdbuf();
-    bool ok = false;
-    json::Value root = json::Parse(ss.str(), &ok);
-    if (!ok || !root.isObject()) {
-        util::Log("settings: invalid JSON, using safe defaults");
-        return;
+    if (!f.good()) {
+        state = StorageState::IoError;
+        err = "seek error";
+        return false;
+    }
+    out.resize(len);
+    f.read(out.data(), static_cast<std::streamsize>(len));
+    if (f.gcount() != static_cast<std::streamsize>(len) || f.fail()) {
+        state = StorageState::IoError;
+        err = "read error";
+        return false;
+    }
+    return true;
+}
+
+bool checkSchemaVersion(const json::Value& root, StorageState& state, std::string& err) {
+    const json::Object* obj = root.object();
+    if (!obj) return false;
+    auto it = obj->find("schemaVersion");
+    if (it == obj->end()) return true;
+
+    const json::Value& sv = it->second;
+    if (sv.type() != json::Value::Type::Number) {
+        state = StorageState::Invalid;
+        err = "invalid schemaVersion type";
+        return false;
+    }
+    double num = sv.asNumber(0.0);
+    if (!std::isfinite(num) || num <= 0.0 || std::floor(num) != num ||
+        num > static_cast<double>(std::numeric_limits<int>::max())) {
+        state = StorageState::Invalid;
+        err = "invalid schemaVersion number";
+        return false;
     }
 
+    state = StorageState::UnsupportedSchema;
+    err = "versioned schema not supported in flat settings";
+    return false;
+}
+
+void loadLegacyCore(const json::Value& root, Settings& s, bool& migratedKey) {
     auto str = [&](const char* k, const std::string& def) {
         return root[k].isString() ? root[k].asString() : def;
     };
@@ -66,41 +134,46 @@ void Settings::load() {
         return root[k].type() == json::Value::Type::Bool ? root[k].asBool() : def;
     };
 
-    enabled = boolean("enabled", enabled);
+    s.enabled = boolean("enabled", s.enabled);
     const std::string backendCode = str("backend", "builtin");
-    backend = backendCode == "builtin" ? TranslationBackend::BuiltIn
-            : backendCode == "openai" ? TranslationBackend::OpenAI : TranslationBackend::Ollama;
+    s.backend = backendCode == "builtin" ? TranslationBackend::BuiltIn
+              : backendCode == "openai" ? TranslationBackend::OpenAI : TranslationBackend::Ollama;
 
-    ollamaHost = str("ollamaHost", ollamaHost);
-    ollamaPort = root["ollamaPort"].isNull() ? ollamaPort : root["ollamaPort"].asInt(ollamaPort);
-    if (ollamaPort < 1 || ollamaPort > 65535) ollamaPort = 11434;
-    ollamaModel = str("ollamaModel", ollamaModel);
-    if (ollamaHost.size() > 2048) ollamaHost = "http://127.0.0.1";
-    if (ollamaModel.size() > 256) ollamaModel = "qwen2.5:3b";
+    s.ollamaHost = str("ollamaHost", s.ollamaHost);
+    s.ollamaPort = root["ollamaPort"].isNull() ? s.ollamaPort : root["ollamaPort"].asInt(s.ollamaPort);
+    if (s.ollamaPort < 1 || s.ollamaPort > 65535) s.ollamaPort = 11434;
+    s.ollamaModel = str("ollamaModel", s.ollamaModel);
+    if (s.ollamaHost.size() > 2048) s.ollamaHost = "http://127.0.0.1";
+    if (s.ollamaModel.size() > 256) s.ollamaModel = "qwen2.5:3b";
 
-    openAIBaseURL = str("openAIBaseURL", openAIBaseURL);
-    if (openAIBaseURL.size() > 2048) openAIBaseURL = "https://api.openai.com/v1";
+    s.openAIBaseURL = str("openAIBaseURL", s.openAIBaseURL);
+    if (s.openAIBaseURL.size() > 2048) s.openAIBaseURL = "https://api.openai.com/v1";
+
     const std::string legacyKey = str("openAIKey", "");
     wchar_t testDir[2]{};
     const bool isolatedTest = GetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", testDir, 2) != 0;
-    bool migratedLegacyKey = false;
     if (isolatedTest) {
-        openAIKey = legacyKey;
+        s.openAIKey = legacyKey;
     } else {
-        openAIKey = credentials::LoadCloudApiKey();
-        if (openAIKey.empty() && !legacyKey.empty()) {
-            openAIKey = legacyKey;
-            credentials::SaveCloudApiKey(openAIKey); // migrate old plaintext settings
-            migratedLegacyKey = true;
+        s.openAIKey = credentials::LoadCloudApiKey();
+        if (s.openAIKey.empty() && !legacyKey.empty()) {
+            s.openAIKey = legacyKey;
+            credentials::SaveCloudApiKey(s.openAIKey);
+            migratedKey = true;
         }
     }
-    openAIModel = str("openAIModel", openAIModel);
-    if (openAIModel.size() > 256) openAIModel = "gpt-5-mini";
+    s.openAIModel = str("openAIModel", s.openAIModel);
+    if (s.openAIModel.size() > 256) s.openAIModel = "gpt-5-mini";
+}
 
-    if (auto l = lang::FromCode(str("nativeLanguage", ""))) nativeLanguage = *l;
-    if (auto l = lang::FromCode(str("foreignLanguage", ""))) foreignLanguage = *l;
-    if (auto d = lang::DirectionFromCode(str("readDirection", ""))) readDirection = *d;
-    if (auto d = lang::DirectionFromCode(str("rewriteDirection", ""))) rewriteDirection = *d;
+void loadLegacyShortcuts(const json::Value& root, Settings& s) {
+    auto str = [&](const char* k, const std::string& def) {
+        return root[k].isString() ? root[k].asString() : def;
+    };
+    if (auto l = lang::FromCode(str("nativeLanguage", ""))) s.nativeLanguage = *l;
+    if (auto l = lang::FromCode(str("foreignLanguage", ""))) s.foreignLanguage = *l;
+    if (auto d = lang::DirectionFromCode(str("readDirection", ""))) s.readDirection = *d;
+    if (auto d = lang::DirectionFromCode(str("rewriteDirection", ""))) s.rewriteDirection = *d;
 
     auto loadHotkey = [&](const char* k, Hotkey& hk) {
         const json::Value& v = root[k];
@@ -114,79 +187,82 @@ void Settings::load() {
             }
         }
     };
-    loadHotkey("readShortcut", readShortcut);
-    loadHotkey("rewriteShortcut", rewriteShortcut);
+    loadHotkey("readShortcut", s.readShortcut);
+    loadHotkey("rewriteShortcut", s.rewriteShortcut);
+
     auto loadAction = [&](const char* key, ShortcutAction fallback) {
-        const std::string value = str(key, "");
-        if (value == "nativePopup") return ShortcutAction::NativePopup;
-        if (value == "foreignPopup") return ShortcutAction::ForeignPopup;
-        if (value == "smartReplace") return ShortcutAction::SmartReplace;
-        if (value == "nativeReplace") return ShortcutAction::NativeReplace;
-        if (value == "foreignReplace") return ShortcutAction::ForeignReplace;
-        if (value == "smartPopup") return ShortcutAction::SmartPopup;
+        const std::string val = str(key, "");
+        if (val == "nativePopup") return ShortcutAction::NativePopup;
+        if (val == "foreignPopup") return ShortcutAction::ForeignPopup;
+        if (val == "smartReplace") return ShortcutAction::SmartReplace;
+        if (val == "nativeReplace") return ShortcutAction::NativeReplace;
+        if (val == "foreignReplace") return ShortcutAction::ForeignReplace;
+        if (val == "smartPopup") return ShortcutAction::SmartPopup;
         return fallback;
     };
-    readShortcutAction = loadAction("readShortcutAction", ShortcutAction::SmartPopup);
-    rewriteShortcutAction = loadAction("rewriteShortcutAction", ShortcutAction::SmartReplace);
-
-    std::string trig = str("selectionTrigger", "none");
-    selectionTrigger = trig == "icon" ? SelectionTrigger::Icon
-                     : trig == "auto" ? SelectionTrigger::Auto
-                     : SelectionTrigger::None;
-    rewritePreview = boolean("rewritePreview", rewritePreview);
-    if (auto s2 = lang::StyleFromCode(str("readStyle", ""))) readStyle = *s2;
-    if (auto s2 = lang::StyleFromCode(str("rewriteStyle", ""))) rewriteStyle = *s2;
-
-    skipApps.clear();
-    if (const json::Array* arr = root["skipApps"].array())
-        for (auto& item : *arr) {
-            if (!item.isString() || skipApps.size() >= 100) continue;
-            std::wstring app = util::Trim(util::Widen(item.asString()));
-            if (app.empty() || app.size() > 260) continue;
-            bool duplicate = false;
-            for (const auto& existing : skipApps)
-                if (util::ToLower(existing) == util::ToLower(app)) duplicate = true;
-            if (!duplicate) skipApps.push_back(std::move(app));
-        }
-
-    hasCompletedFirstLaunch = boolean("hasCompletedFirstLaunch", false);
-    lastUpdateCheck = (long long)root["lastUpdateCheck"].asNumber(0);
-    if (migratedLegacyKey) save(); // rewrite JSON without the plaintext key
+    s.readShortcutAction = loadAction("readShortcutAction", ShortcutAction::SmartPopup);
+    s.rewriteShortcutAction = loadAction("rewriteShortcutAction", ShortcutAction::SmartReplace);
 }
 
-bool Settings::save() const {
-    json::Object root;
-    root["enabled"] = enabled;
-    root["backend"] = backend == TranslationBackend::BuiltIn ? "builtin"
-                    : backend == TranslationBackend::OpenAI ? "openai" : "ollama";
+void loadLegacyBehaviorAndApps(const json::Value& root, Settings& s) {
+    auto str = [&](const char* k, const std::string& def) {
+        return root[k].isString() ? root[k].asString() : def;
+    };
+    auto boolean = [&](const char* k, bool def) {
+        return root[k].type() == json::Value::Type::Bool ? root[k].asBool() : def;
+    };
 
-    root["ollamaHost"] = ollamaHost;
-    root["ollamaPort"] = ollamaPort;
-    root["ollamaModel"] = ollamaModel;
+    std::string trig = str("selectionTrigger", "none");
+    s.selectionTrigger = trig == "icon" ? SelectionTrigger::Icon
+                       : trig == "auto" ? SelectionTrigger::Auto
+                       : SelectionTrigger::None;
+    s.rewritePreview = boolean("rewritePreview", s.rewritePreview);
+    if (auto s2 = lang::StyleFromCode(str("readStyle", ""))) s.readStyle = *s2;
+    if (auto s2 = lang::StyleFromCode(str("rewriteStyle", ""))) s.rewriteStyle = *s2;
 
-    root["openAIBaseURL"] = openAIBaseURL;
-    wchar_t testDir[2]{};
-    const bool isolatedTest = GetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", testDir, 2) != 0;
-    if (isolatedTest) root["openAIKey"] = openAIKey;
-    else if (!credentials::SaveCloudApiKey(openAIKey)) {
-        util::Log("settings: credential save failed (%lu)", GetLastError());
-        return false;
+    s.skipApps.clear();
+    if (const json::Array* arr = root["skipApps"].array()) {
+        for (auto& item : *arr) {
+            if (!item.isString() || s.skipApps.size() >= 100) continue;
+            std::wstring app = util::Trim(util::Widen(item.asString()));
+            if (app.empty() || app.size() > 260) continue;
+            bool dup = false;
+            for (const auto& existing : s.skipApps)
+                if (util::ToLower(existing) == util::ToLower(app)) dup = true;
+            if (!dup) s.skipApps.push_back(std::move(app));
+        }
     }
-    root["openAIModel"] = openAIModel;
+    s.hasCompletedFirstLaunch = boolean("hasCompletedFirstLaunch", false);
+    s.lastUpdateCheck = (long long)root["lastUpdateCheck"].asNumber(0);
+}
 
-    root["nativeLanguage"] = lang::Code(nativeLanguage);
-    root["foreignLanguage"] = lang::Code(foreignLanguage);
-    root["readDirection"] = lang::DirectionCode(readDirection);
-    root["rewriteDirection"] = lang::DirectionCode(rewriteDirection);
+json::Object buildLegacyCoreObject(const Settings& s) {
+    json::Object root;
+    root["enabled"] = s.enabled;
+    root["backend"] = s.backend == TranslationBackend::BuiltIn ? "builtin"
+                    : s.backend == TranslationBackend::OpenAI ? "openai" : "ollama";
+    root["ollamaHost"] = s.ollamaHost;
+    root["ollamaPort"] = s.ollamaPort;
+    root["ollamaModel"] = s.ollamaModel;
+    root["openAIBaseURL"] = s.openAIBaseURL;
+    root["openAIModel"] = s.openAIModel;
+    root["nativeLanguage"] = lang::Code(s.nativeLanguage);
+    root["foreignLanguage"] = lang::Code(s.foreignLanguage);
+    root["readDirection"] = lang::DirectionCode(s.readDirection);
+    root["rewriteDirection"] = lang::DirectionCode(s.rewriteDirection);
+    return root;
+}
 
+void appendLegacyShortcutsAndApps(const Settings& s, json::Object& root) {
     auto hotkeyJson = [](const Hotkey& hk) {
         json::Object o;
         o["modifiers"] = (int)hk.modifiers;
         o["vk"] = (int)hk.vk;
         return json::Value(std::move(o));
     };
-    root["readShortcut"] = hotkeyJson(readShortcut);
-    root["rewriteShortcut"] = hotkeyJson(rewriteShortcut);
+    root["readShortcut"] = hotkeyJson(s.readShortcut);
+    root["rewriteShortcut"] = hotkeyJson(s.rewriteShortcut);
+
     auto actionCode = [](ShortcutAction action) -> std::string {
         switch (action) {
         case ShortcutAction::NativePopup: return "nativePopup";
@@ -198,49 +274,103 @@ bool Settings::save() const {
         default: return "smartPopup";
         }
     };
-    root["readShortcutAction"] = actionCode(readShortcutAction);
-    root["rewriteShortcutAction"] = actionCode(rewriteShortcutAction);
+    root["readShortcutAction"] = actionCode(s.readShortcutAction);
+    root["rewriteShortcutAction"] = actionCode(s.rewriteShortcutAction);
 
-    root["selectionTrigger"] = selectionTrigger == SelectionTrigger::Icon ? "icon"
-                             : selectionTrigger == SelectionTrigger::Auto ? "auto"
+    root["selectionTrigger"] = s.selectionTrigger == SelectionTrigger::Icon ? "icon"
+                             : s.selectionTrigger == SelectionTrigger::Auto ? "auto"
                              : "none";
-    root["rewritePreview"] = rewritePreview;
-    root["readStyle"] = lang::StyleCode(readStyle);
-    root["rewriteStyle"] = lang::StyleCode(rewriteStyle);
+    root["rewritePreview"] = s.rewritePreview;
+    root["readStyle"] = lang::StyleCode(s.readStyle);
+    root["rewriteStyle"] = lang::StyleCode(s.rewriteStyle);
 
     json::Array apps;
-    for (auto& a : skipApps) apps.push_back(util::Narrow(a));
+    for (const auto& a : s.skipApps) apps.push_back(util::Narrow(a));
     root["skipApps"] = json::Value(std::move(apps));
 
-    root["hasCompletedFirstLaunch"] = hasCompletedFirstLaunch;
-    root["lastUpdateCheck"] = (double)lastUpdateCheck;
+    root["hasCompletedFirstLaunch"] = s.hasCompletedFirstLaunch;
+    root["lastUpdateCheck"] = (double)s.lastUpdateCheck;
+}
 
-    // 原子写：先写临时文件再 rename 替换，进程中途被杀也不会留下半截 JSON
-    std::wstring path = filePath();
+bool writeTempAndReplace(const std::wstring& path, const std::string& data) {
     std::wstring tmp = path + L".tmp";
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) {
+        if (!f.is_open()) {
             util::Log("settings: cannot open temp file (%lu)", GetLastError());
             return false;
         }
-        f << json::Value(std::move(root)).dump();
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
         f.flush();
-        if (!f) {
+        if (!f.good()) {
             util::Log("settings: temp write failed");
             f.close();
             DeleteFileW(tmp.c_str());
             return false;
         }
     }
-    // 杀毒软件/索引器可能短暂占用目标文件，做有限重试但不阻塞太久。
     for (int attempt = 0; attempt < 4; ++attempt) {
         if (MoveFileExW(tmp.c_str(), path.c_str(),
-                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             return true;
+        }
         if (attempt < 3) Sleep(15 * (attempt + 1));
     }
     util::Log("settings: atomic replace failed (%lu)", GetLastError());
     DeleteFileW(tmp.c_str());
     return false;
+}
+
+} // namespace
+
+void Settings::load() {
+    storageState_ = StorageState::Ready;
+    storageError_.clear();
+    const std::wstring path = filePath();
+    if (!checkFileAttributes(path, storageState_, storageError_)) {
+        return;
+    }
+    std::string content;
+    if (!readFileContent(path, content, storageState_, storageError_)) {
+        return;
+    }
+    bool ok = false;
+    json::Value root = json::Parse(content, &ok);
+    if (!ok || !root.isObject()) {
+        storageState_ = StorageState::Invalid;
+        storageError_ = "invalid JSON";
+        util::Log("settings: invalid JSON, using safe defaults");
+        return;
+    }
+    if (!checkSchemaVersion(root, storageState_, storageError_)) {
+        return;
+    }
+    bool migratedLegacyKey = false;
+    loadLegacyCore(root, *this, migratedLegacyKey);
+    loadLegacyShortcuts(root, *this);
+    loadLegacyBehaviorAndApps(root, *this);
+    if (migratedLegacyKey) {
+        save();
+    }
+}
+
+bool Settings::save() const {
+    if (storageState_ != StorageState::Ready) {
+        util::Log("settings: save rejected, persistent state is %d", static_cast<int>(storageState_));
+        return false;
+    }
+
+    json::Object root = buildLegacyCoreObject(*this);
+    appendLegacyShortcutsAndApps(*this, root);
+
+    wchar_t testDir[2]{};
+    const bool isolatedTest = GetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", testDir, 2) != 0;
+    if (isolatedTest) {
+        root["openAIKey"] = openAIKey;
+    } else if (!credentials::SaveCloudApiKey(openAIKey)) {
+        util::Log("settings: credential save failed (%lu)", GetLastError());
+        return false;
+    }
+
+    return writeTempAndReplace(filePath(), json::Value(std::move(root)).dump());
 }

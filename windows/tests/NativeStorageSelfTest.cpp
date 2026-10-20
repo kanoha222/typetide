@@ -162,6 +162,113 @@ void TestMissingFileFreshInstallControl() {
     if (!fixture.Finalize()) throw InfraException(213, GetLastError());
 }
 
+const char* GetValidSchemaV2Json() {
+    return "{\n"
+           "  \"schemaVersion\": 2,\n"
+           "  \"profiles\": [\n"
+           "    {\n"
+           "      \"id\": \"profile-read-01\",\n"
+           "      \"name\": \"General Reader\",\n"
+           "      \"nativeLanguage\": \"zh\",\n"
+           "      \"foreignLanguage\": \"en\",\n"
+           "      \"direction\": \"auto\",\n"
+           "      \"promptMode\": \"preset\",\n"
+           "      \"presetStyle\": \"faithful\",\n"
+           "      \"systemPrompt\": \"Translate {{source_language}} to {{target_language}} faithfully.\",\n"
+           "      \"backend\": \"ollama\",\n"
+           "      \"model\": \"qwen2.5:3b\"\n"
+           "    },\n"
+           "    {\n"
+           "      \"id\": \"profile-write-02\",\n"
+           "      \"name\": \"Academic Polisher\",\n"
+           "      \"nativeLanguage\": \"en\",\n"
+           "      \"foreignLanguage\": \"zh\",\n"
+           "      \"direction\": \"auto\",\n"
+           "      \"promptMode\": \"custom\",\n"
+           "      \"presetStyle\": \"faithful\",\n"
+           "      \"systemPrompt\": \"Polish academic phrasing from {{source_language}} to {{target_language}}.\",\n"
+           "      \"backend\": \"openai\",\n"
+           "      \"model\": \"gpt-5-mini\"\n"
+           "    }\n"
+           "  ],\n"
+           "  \"shortcut1ProfileId\": \"profile-read-01\",\n"
+           "  \"shortcut2ProfileId\": \"profile-write-02\",\n"
+           "  \"selectionProfileId\": \"profile-read-01\"\n"
+           "}\n";
+}
+
+void TestSchemaV2Preservation() {
+    ScopedStorageFixture fixture(L"schema-v2");
+    const std::string original = GetValidSchemaV2Json();
+    bool originalOk = false;
+    json::Value originalRoot = json::Parse(original, &originalOk);
+    if (!originalOk || !originalRoot.isObject()) {
+        throw InfraException(214, 0);
+    }
+    if (!WriteFileBinary(fixture.SettingsFile(), original)) {
+        throw InfraException(215, GetLastError());
+    }
+
+    Settings s;
+    s.load();
+    s.enabled = !s.enabled;
+    const bool saveOk = s.save();
+
+    const FileReadResult after = ReadFileBinary(fixture.SettingsFile());
+    Check(after.readable, "schema v2 file must remain readable after save attempt");
+    if (!saveOk) {
+        Check(after.data == original,
+              "schema v2 bytes must remain strictly unchanged when save is rejected");
+    } else {
+        bool jsonOk = false;
+        json::Value root = json::Parse(after.data, &jsonOk);
+        Check(jsonOk && root.isObject(), "saved schema v2 is valid JSON object");
+        Check(root["schemaVersion"].asInt() == 2, "saved schemaVersion is 2");
+        Check(root["profiles"].dump() == originalRoot["profiles"].dump(),
+              "saved schema v2 preserves full profiles array semantics");
+        Check(root["shortcut1ProfileId"].asString() == "profile-read-01",
+              "saved shortcut1 binding preserved");
+        Check(root["shortcut2ProfileId"].asString() == "profile-write-02",
+              "saved shortcut2 binding preserved");
+        Check(root["selectionProfileId"].asString() == "profile-read-01",
+              "saved selection binding preserved");
+    }
+
+    if (!fixture.Finalize()) throw InfraException(216, GetLastError());
+}
+
+void TestInvalidSchemaVersionPreservation() {
+    struct SchemaCase {
+        const char* label;
+        const char* jsonContent;
+    };
+    const SchemaCase cases[] = {
+        {"huge-finite", "{\"schemaVersion\": 1e100, \"enabled\": true}"},
+        {"non-integral", "{\"schemaVersion\": 2.5, \"enabled\": true}"},
+        {"negative", "{\"schemaVersion\": -1, \"enabled\": true}"},
+        {"zero", "{\"schemaVersion\": 0, \"enabled\": true}"},
+        {"string", "{\"schemaVersion\": \"2\", \"enabled\": true}"},
+        {"bool", "{\"schemaVersion\": true, \"enabled\": true}"},
+        {"null", "{\"schemaVersion\": null, \"enabled\": true}"},
+    };
+    for (const auto& c : cases) {
+        ScopedStorageFixture fixture(L"schema-invalid");
+        if (!WriteFileBinary(fixture.SettingsFile(), c.jsonContent)) {
+            throw InfraException(220, GetLastError());
+        }
+        Settings s;
+        s.load();
+        s.enabled = !s.enabled;
+        const bool saveOk = s.save();
+
+        Check(!saveOk, (std::string("schemaVersion ") + c.label + " save rejected").c_str());
+        const FileReadResult after = ReadFileBinary(fixture.SettingsFile());
+        Check(after.readable && after.data == c.jsonContent,
+              (std::string("schemaVersion ") + c.label + " bytes preserved").c_str());
+        if (!fixture.Finalize()) throw InfraException(221, GetLastError());
+    }
+}
+
 } // namespace
 
 int main() {
@@ -175,6 +282,8 @@ int main() {
         TestOversizedFilePreservation();
         TestReadLockIOErrorPreservation();
         TestMissingFileFreshInstallControl();
+        TestSchemaV2Preservation();
+        TestInvalidSchemaVersionPreservation();
     } catch (const InfraException& ex) {
         std::fprintf(stderr, "[infra error step %d] win32=%lu\n", ex.stepCode, ex.win32Error);
         return 2;

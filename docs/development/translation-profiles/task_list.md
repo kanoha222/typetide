@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前状态：纯核心编解码与领域校验在 commit df2fc7c 达成完整 GREEN（run 39356274299, job 118411675231 及基线全部 success）；现已完成原生设置存储黑盒保护用例与凭证双重隔离测试脚手架登记，原生存储 RED 待云端独立测试实际跑验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。核心已完整 GREEN，已追加 Native settings storage self-test 覆盖黑盒保护与凭证隔离，待云端复跑实证 RED。Settings/UI/provider 集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
+**当前状态：原生设置存储在 commit 231883a 实证 10 项真实 RED（run 39361446003, job 118428324821，5 项黑盒保护用例各 2 处断言失败，退出码 1；缺少文件初始安装对照与凭证隔离均通过）；现已完成原生持久化存储保护状态（`StorageState`）最小实现与 v2 暂只读过渡回归追加，完整 GREEN 待云端复跑验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。核心已完整 GREEN，已追加 Native settings storage self-test 并完成存储保护状态最小实现，待云端复跑实证 GREEN。Settings/UI/provider 完整集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -22,7 +22,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 ## Phase 1 — RED → GREEN: profile model and migration
 
 - [ ] RED: add field/enum/ID/reference and size-boundary failures, schema number checks, full-consumption/depth/string/Unicode failures, multiline/emoji roundtrips, storage-state save blocking, and atomic-save failure cases.
-  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。[最新测试运行实证 1 failure(s)](https://github.com/kanoha222/typetide/actions/runs/39233983588/job/117998489088)，commit d469920。[纯核心完整 GREEN 已经验证](https://github.com/kanoha222/typetide/actions/runs/39356274299/job/118411675231)，commit df2fc7c，0 failures。现已登记 Native settings storage self-test（覆盖未来 schema 3、损坏 JSON、零字节、超大文件、读锁 IO 错误下的拒 save 保 bytes 及新安装允许 save 对照与凭证双重隔离），待云端独立测试实证 RED。
+  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。[最新测试运行实证 1 failure(s)](https://github.com/kanoha222/typetide/actions/runs/39233983588/job/117998489088)，commit d469920。[纯核心完整 GREEN 已经验证](https://github.com/kanoha222/typetide/actions/runs/39356274299/job/118411675231)，commit df2fc7c，0 failures。[原生设置存储实证 10 failure(s) 真实 RED](https://github.com/kanoha222/typetide/actions/runs/39361446003/job/118428324821)，commit 231883a。现已完成原生 Settings 存储保护状态（`StorageState`）持久锁与版本化只读保护最小实现，追加 v2 过渡回归用例，待云端独立测试实证 GREEN。
 - [ ] RED: prove migration binds each slot by action (including swapped/same actions), selection binds read, credential handling stays separate, and unsupported-but-valid profiles survive unchanged.
 - [ ] GREEN: implement decoupled types/profile/store with existing JSON APIs, unified limits, candidate validation, atomic persistence/publication, and all-path storage guards.
 - [ ] Record failing/passing evidence; refactor without changing legacy behavior.

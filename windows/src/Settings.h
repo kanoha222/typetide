@@ -26,6 +26,13 @@ enum class ShortcutAction {
     ForeignReplace,
 };
 
+enum class StorageState {
+    Ready,
+    Invalid,
+    UnsupportedSchema,
+    IoError,
+};
+
 /// 全局快捷键（RegisterHotKey 语义）
 struct Hotkey {
     UINT modifiers = MOD_ALT;  // MOD_ALT / MOD_CONTROL / MOD_SHIFT / MOD_WIN 组合
@@ -74,10 +81,19 @@ struct Settings {
     bool hasCompletedFirstLaunch = false;
     long long lastUpdateCheck = 0;  // Unix 秒
 
+    // --- 存储状态 ---
+    StorageState storageState() const { return storageState_; }
+    const std::string& storageError() const { return storageError_; }
+    bool isReadOnly() const { return storageState_ != StorageState::Ready; }
+
     // --- 持久化 ---
     static Settings& shared();
     void load();
     /// 原子保存；失败时保留旧文件并返回 false。
     bool save() const;
     static std::wstring filePath();
+
+private:
+    StorageState storageState_ = StorageState::Ready;
+    std::string storageError_;
 };
