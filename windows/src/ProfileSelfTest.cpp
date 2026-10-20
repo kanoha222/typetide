@@ -506,6 +506,29 @@ void TestSchemaVersions() {
           "settings root must be object");
 }
 
+void TestDirectDuplicateDecoding(const ProfileConfiguration& configuration) {
+    auto directDup = profiles::store::Encode(configuration);
+    const auto itProfiles = directDup.find("profiles");
+    const auto* arr = itProfiles == directDup.end() ? nullptr : itProfiles->second.array();
+    Check(arr && arr->size() >= 2, "encoder provides multi-profile array for direct dup test");
+    if (!arr || arr->size() < 2) return;
+    auto items = *arr;
+    const auto* secondObj = items[1].object();
+    const auto* firstObj = items[0].object();
+    Check(firstObj && secondObj, "profile items are JSON objects for direct dup test");
+    if (!firstObj || !secondObj) return;
+    auto modifiedSecond = *secondObj;
+    const std::string firstId = (*firstObj).at("id").asString();
+    modifiedSecond["id"] = firstId;
+    items[1] = json::Value(std::move(modifiedSecond));
+    directDup["profiles"] = json::Value(std::move(items));
+    directDup["shortcut1ProfileId"] = firstId;
+    directDup["shortcut2ProfileId"] = firstId;
+    directDup["selectionProfileId"] = firstId;
+    Check(profiles::store::Decode(json::Value(directDup)).state == ProfileLoadState::Invalid,
+          "direct serialized duplicate IDs rejected while decoding");
+}
+
 void TestSchemaFields() {
     const auto configuration = CodecConfiguration();
     const char* fields[] = {
@@ -538,6 +561,16 @@ void TestSchemaFields() {
     Check(profiles::store::Decode(json::Value(profiles::store::Encode(duplicate))).state ==
               ProfileLoadState::Invalid,
           "duplicate IDs rejected while decoding");
+    ProfileConfiguration emptyConfig;
+    Check(profiles::store::Decode(json::Value(profiles::store::Encode(emptyConfig))).state ==
+              ProfileLoadState::Invalid,
+          "encoded empty configuration decodes as invalid without legacy fallback");
+    auto badBinding = configuration;
+    badBinding.bindings.shortcut1ProfileId = "missing";
+    Check(profiles::store::Decode(json::Value(profiles::store::Encode(badBinding))).state ==
+              ProfileLoadState::Invalid,
+          "encoded invalid binding decodes as invalid without legacy fallback");
+    TestDirectDuplicateDecoding(configuration);
 }
 
 #endif

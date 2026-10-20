@@ -222,12 +222,11 @@ ProfileLoadResult Decode(const json::Value& root) {
 }
 
 json::Object Encode(const ProfileConfiguration& configuration) {
-    if (!Validate(configuration).ok) {
-        return {};
-    }
-
     json::Object root;
     root["schemaVersion"] = 2;
+    if (!Validate(configuration).ok) {
+        return root;
+    }
 
     json::Array profilesArr;
     profilesArr.reserve(configuration.profiles.size());

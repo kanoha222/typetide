@@ -1,6 +1,6 @@
 # Translation profiles: implementation gates
 
-**Scope:** Windows only. **Implementation:** 完整 Profile 测试集 112 failures 行为 RED 已实证（commit 708a593）；领域逻辑与存储编解码已实施，完整 GREEN 待云端复跑验证。设计文档已完成；云端 Windows 独立测试已配置、编译并运行，完整翻译配置功能与覆盖率仍未验证。当前状态见[环境状态](environment_status.md)。
+**Scope:** Windows only. **Implementation:** 云端 Windows 在 commit d469920 观测到 1 项真实失败（唯一失败：`duplicate IDs rejected while decoding`）；现已完成 Encode fail-open 针对性修复与回归追加，完整 GREEN 待云端复跑验证。设计文档已完成；完整翻译配置功能与覆盖率仍未验证。当前状态见[环境状态](environment_status.md)。
 
 This directory records the approved Windows translation-profile design. macOS adaptation is deferred while retaining the same intended configuration semantics. Follow the repository [agent guide](../../../AGENTS.md).
 

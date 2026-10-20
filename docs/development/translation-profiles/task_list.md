@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前状态：完整 Profile 测试集 112 failures 行为 RED 已实证（commit 708a593）；领域模型与存储编解码已实施，完整 GREEN 待云端复跑验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。Windows 独立测试实证 112 failure(s) 行为 RED；现已完成 TranslationProfile.cpp / TranslationProfileStore.cpp 完整领域逻辑实施（Phase 1c）。GREEN、Settings/UI/provider 集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
+**当前状态：云端 Windows 独立测试在 commit d469920 观测到 1 项真实失败（唯一失败：`duplicate IDs rejected while decoding`）；现已完成 Encode fail-open 根因针对性修复与回归追加，完整 GREEN 待云端复跑验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。Windows 独立测试在 commit d469920 观测到 1 failure(s)（非环境/构建失败）；现已针对 Encode 返回 `{}` 导致 legacy 回退的 fail-open 根因完成最小修复，并追加无效配置与直接重复 ID 反序列化回归用例。GREEN、Settings/UI/provider 集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -22,7 +22,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 ## Phase 1 — RED → GREEN: profile model and migration
 
 - [ ] RED: add field/enum/ID/reference and size-boundary failures, schema number checks, full-consumption/depth/string/Unicode failures, multiline/emoji roundtrips, storage-state save blocking, and atomic-save failure cases.
-  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。现已完成 Phase 1c 领域校验、能力判定、Defaults/Find/BoundProfile 与 v2/legacy 存储编解码完整实现，完整 GREEN 待云端复跑验证。
+  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。[最新测试运行实证 1 failure(s)](https://github.com/kanoha222/typetide/actions/runs/39233983588/job/117998489088)，commit d469920。现已针对 Encode fail-open 根因完成最小修复并追加回归断言，完整 GREEN 待云端复跑验证。
 - [ ] RED: prove migration binds each slot by action (including swapped/same actions), selection binds read, credential handling stays separate, and unsupported-but-valid profiles survive unchanged.
 - [ ] GREEN: implement decoupled types/profile/store with existing JSON APIs, unified limits, candidate validation, atomic persistence/publication, and all-path storage guards.
 - [ ] Record failing/passing evidence; refactor without changing legacy behavior.
