@@ -15,6 +15,11 @@ add_executable(TypeTide WIN32
     src/TranslationProfile.cpp
     src/TranslationProfileStore.cpp
     src/Settings.cpp
+    src/SettingsCodec.cpp
+    src/SettingsCodecGlobals.cpp
+    src/SettingsIdentifier.cpp
+    src/SettingsStorage.cpp
+    src/SettingsTransaction.cpp
     src/Credentials.cpp
     src/Clipboard.cpp
     src/Keyboard.cpp

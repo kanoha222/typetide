@@ -6,6 +6,7 @@
 
 namespace transaction_test {
 void RunMigrationCases();
+void RunAdditionalCases();
 }
 
 namespace {
@@ -340,7 +341,7 @@ void TestSnapshotIsolation(ScopedStorageFixture& fixture, FakeCredentialStore& s
 } // namespace
 
 int main() {
-    std::printf("[native settings transaction self-test: RED scaffold]\n");
+    std::printf("[native settings transaction self-test]\n");
     try {
         RunCase(L"ref-guards", TestReferenceGuards);
         RunCase(L"backend-lifetime", TestBackendLifetimeAndLegacyFacade);
@@ -356,6 +357,7 @@ int main() {
         RunCase(L"key-reuse", TestUnchangedKeyReuseNoCredWrite);
         RunCase(L"invalid-candidate", TestInvalidCandidateNotPublished);
         RunCase(L"snapshot", TestSnapshotIsolation);
+        RunAdditionalCases();
     } catch (const InfraException& exception) {
         std::fprintf(stderr, "[infra error step %d] win32=%lu\n", exception.stepCode, exception.win32Error);
         return 2;

@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前状态：已验证基线仍为 commit `f724b4c`：原生存储写保护 5/5 check-runs GREEN（run 39364511799，job 118438131020，0 failures）。当前增量仅为原生事务 RED 脚手架修订，尚未 configure/build/run，也尚无事务行为 RED 实证；`commit()` 明确返回 `false` / `NotReady`，完整事务实现必须等待真实云端 RED。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`。新增测试契约约束真实文件锁回滚、密钥复用/清空、迁移来源、无密钥加载与已提交快照隔离，不能据此宣称执行通过或达到覆盖率。Settings/UI/provider 完整集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。draft PR #2 已启用 auto-fix，不合并、不发版。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
+**当前状态：commit `9c7b0e3` 的原生事务已实证行为 RED（run `39406689216` / job `118574219317`：configure/build SUCCESS，21 failure(s)，job exit 1，无 infra 2）；Core/NativeGuard/Windows 基线仍 PASS。主会话已授权本批 Settings/版本化凭据事务实现；当前源码增量与追加回归尚未发布/执行验证，不能宣称 GREEN 或覆盖率。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`，auto-fix 开启，不合并、不发版。本批包含完整值 ledger/committed snapshot、v2 与 globals codec、安全 mutable/const save、凭据暂存与回滚/来源受限清理、typed read 与隔离内存后端；原断言保留，追加 14 项边界回归未独立运行 RED。Settings/UI/provider 完整集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -22,7 +22,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 ## Phase 1 — RED → GREEN: profile model and migration
 
 - [ ] RED: add field/enum/ID/reference and size-boundary failures, schema number checks, full-consumption/depth/string/Unicode failures, multiline/emoji roundtrips, storage-state save blocking, and atomic-save failure cases.
-  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。[最新测试运行实证 1 failure(s)](https://github.com/kanoha222/typetide/actions/runs/39233983588/job/117998489088)，commit d469920。[纯核心完整 GREEN 已经验证](https://github.com/kanoha222/typetide/actions/runs/39356274299/job/118411675231)，commit df2fc7c，0 failures。[原生设置存储实证 10 failure(s) 真实 RED](https://github.com/kanoha222/typetide/actions/runs/39361446003/job/118428324821)，commit 231883a。[原生设置存储写保护实证 5/5 GREEN](https://github.com/kanoha222/typetide/actions/runs/39364511799/job/118438131020)，commit f724b4c。当前仅修订原生事务 RED 脚手架（`NativeTransactionSelfTest`）：独立 link-time 内存 facade、已提交 seed 的真实锁回滚、有效大 JSON 边界、来源受限迁移、密钥复用/清空与脏 draft 后的已提交快照断言。`commit()` 为 `false` / `NotReady` 壳，新增凭据 helpers 无 fake 时 fail closed；未本地构建或运行，待云端独立测试实证 RED，不能当作 GREEN 或覆盖率证据。
+  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。[最新测试运行实证 1 failure(s)](https://github.com/kanoha222/typetide/actions/runs/39233983588/job/117998489088)，commit d469920。[纯核心完整 GREEN 已经验证](https://github.com/kanoha222/typetide/actions/runs/39356274299/job/118411675231)，commit df2fc7c，0 failures。[原生设置存储实证 10 failure(s) 真实 RED](https://github.com/kanoha222/typetide/actions/runs/39361446003/job/118428324821)，commit 231883a。[原生设置存储写保护实证 5/5 GREEN](https://github.com/kanoha222/typetide/actions/runs/39364511799/job/118438131020)，commit f724b4c。[原生事务实证 21 failure(s) 行为 RED](https://github.com/kanoha222/typetide/actions/runs/39406689216/job/118574219317)，commit `9c7b0e3`，configure/build 成功、无 infra 2。获授权后实现 `SettingsData` 非递归 ledger、profile-aware instance commit/committed snapshot、v2+全 globals codec、CoCreateGuid ref、先完整字节限额再 stage/flush/replace/发布/已知来源清理、typed credential reads、mutable/const save 边界及隔离进程内存 store；原独立 link-time facade 与 strict double 隔离保留。追加 14 项边界回归先书写但未独立执行 RED；本批尚无云端 GREEN 或实测覆盖率。未本地构建/运行或触及真实 CM，等待独立审查后由主会话发布取得执行证据。
 - [ ] RED: prove migration binds each slot by action (including swapped/same actions), selection binds read, credential handling stays separate, and unsupported-but-valid profiles survive unchanged.
 - [ ] GREEN: implement decoupled types/profile/store with existing JSON APIs, unified limits, candidate validation, atomic persistence/publication, and all-path storage guards.
 - [ ] Record failing/passing evidence; refactor without changing legacy behavior.
@@ -56,3 +56,10 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 - [ ] Report full-project baseline and UI coverage separately; list every unexecuted check and environment limitation.
 - [ ] Complete code-reviewer-role and security review, resolve high/critical findings, rerun affected checks, and fill evidence/status back into these documents.
 - [ ] Accept only when product, migration, session identity, local/cloud clarity, privacy, tests, and measured coverage gates are met. No automatic commit, push, or release.
+
+## Integration gate — 待办，非已完成功能
+
+- [ ] 公开 `Settings` 字段目前仍是旧版可编辑 draft，生产 `Translator` 在下一次集成前仍读取它们；本批不宣称完整运行时激活。保存失败时旧版行为不变，未提交的 draft 可能继续保留。
+- [ ] 功能验收前，UI 必须使用 candidate commit，并在提交后重新同步控件、处理 error + warning / 只读状态；`Translator` 必须冻结 committed snapshot，不再读取 draft。
+- [ ] `.tmp` 的 `CREATE_NEW` 冲突会保护未知文件，但需要明确的恢复 UX，而不是静默删除非自有临时文件。
+- [ ] `TYPETIDE_DATA_DIR` 下的进程内存凭据仅用于测试，不是持久化的生产路径。

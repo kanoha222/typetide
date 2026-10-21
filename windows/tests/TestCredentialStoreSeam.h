@@ -21,6 +21,8 @@ public:
     std::string LoadLegacyFixedKey() override;
     bool SaveLegacyFixedKey(const std::string& key) override;
     bool DeleteLegacyFixedKey() override;
+    credentials::LoadResult ReadKey(const std::string& ref) override;
+    credentials::LoadResult ReadLegacyFixedKey() override;
 
     // Each case creates a fresh store; counters/events are never reset mid-case.
     std::map<std::string, std::string> entries;
@@ -33,6 +35,8 @@ public:
     size_t saveLegacyCalls = 0;
     size_t deleteLegacyCalls = 0;
     bool simulateStageFailure = false;
+    bool simulateReadFailure = false;
+    bool simulateDeleteFailure = false;
 };
 
 class ScopedCredentialStore {

@@ -45,6 +45,16 @@ bool SaveCloudApiKey(const std::string&) {
     return false;
 }
 
+LoadResult ReadKey(const std::string&) {
+    g_unexpectedLoadCalls.fetch_add(1);
+    return {};
+}
+
+LoadResult ReadLegacyFixedKey() {
+    g_unexpectedLoadCalls.fetch_add(1);
+    return {};
+}
+
 std::string LoadKey(const std::string&) {
     g_unexpectedLoadCalls.fetch_add(1);
     return {};

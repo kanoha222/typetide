@@ -31,6 +31,15 @@ endif()
 # After observing behavioral RED, the core owner can add the implemented
 # TranslationTypes/Profile/Store and Language sources, then disable JSON-only.
 
+set(SETTINGS_TRANSACTION_SOURCES
+    ../src/Settings.cpp
+    ../src/SettingsCodec.cpp
+    ../src/SettingsCodecGlobals.cpp
+    ../src/SettingsIdentifier.cpp
+    ../src/SettingsStorage.cpp
+    ../src/SettingsTransaction.cpp
+)
+
 add_executable(NativeStorageSelfTest
     ../src/Json.cpp
     ../src/Language.cpp
@@ -38,7 +47,7 @@ add_executable(NativeStorageSelfTest
     ../src/TranslationTypes.cpp
     ../src/TranslationProfile.cpp
     ../src/TranslationProfileStore.cpp
-    ../src/Settings.cpp
+    ${SETTINGS_TRANSACTION_SOURCES}
     TestCredentialsDouble.cpp
     NativeStorageFixture.cpp
     NativeStorageSelfTest.cpp
@@ -67,12 +76,13 @@ add_executable(NativeTransactionSelfTest
     ../src/TranslationTypes.cpp
     ../src/TranslationProfile.cpp
     ../src/TranslationProfileStore.cpp
-    ../src/Settings.cpp
+    ${SETTINGS_TRANSACTION_SOURCES}
     NativeStorageFixture.cpp
     TestCredentialFacade.cpp
     TestCredentialStoreSeam.cpp
     NativeTransactionSupport.cpp
     NativeTransactionMigrationTests.cpp
+    NativeTransactionAdditionalTests.cpp
     NativeTransactionSelfTest.cpp
 )
 

@@ -49,7 +49,8 @@ struct SettingsSnapshot {
     bool hasCompletedFirstLaunch = false;
 };
 
-struct Settings {
+// Full value ledger; never contains Settings, a Settings pointer, or another ledger.
+struct SettingsData {
     bool enabled = true;
     TranslationBackend backend = TranslationBackend::BuiltIn;
 
@@ -90,27 +91,43 @@ struct Settings {
     // 翻译配置集合（v2 核心）
     ProfileConfiguration profileConfig = profiles::Defaults();
 
-    // --- 存储与事务状态 ---
+    bool operator==(const SettingsData&) const = default;
+};
+
+// Public inherited fields remain editable drafts for existing main-thread callers.
+struct Settings : SettingsData {
+    Settings();
+
     StorageState storageState() const { return storageState_; }
     const std::string& storageError() const { return storageError_; }
+    const std::string& storageWarning() const { return storageWarning_; }
     bool isReadOnly() const { return storageState_ != StorageState::Ready; }
     uint64_t connectionEpoch() const { return connectionEpoch_; }
     const std::string& credentialRef() const { return credentialRef_; }
 
-    // --- 事务提交与快照 ---
     bool commit(const Settings& candidate, std::string* error = nullptr);
+    // Resolved committed values only. No credential I/O; copy on the main thread.
     SettingsSnapshot snapshot() const;
 
-    // --- 持久化 ---
     static Settings& shared();
     void load();
-    /// 原子保存；失败时保留旧文件并返回 false。
-    bool save() const;
+    // Mutable legacy callers commit the actual receiver, never the singleton.
+    bool save(std::string* error = nullptr);
+    // Only an identical, already-versioned ledger may be written by a const receiver.
+    // Dirty values or legacy migration require mutable save()/commit().
+    bool save(std::string* error = nullptr) const;
     static std::wstring filePath();
 
 private:
+    bool commitReady(const Settings& candidate, std::string* error);
+    void adopt(SettingsData data, std::string ref, bool legacyOrigin,
+               bool versioned, uint64_t epoch);
+    SettingsData committed_;
     StorageState storageState_ = StorageState::Ready;
     std::string storageError_;
+    std::string storageWarning_;
     uint64_t connectionEpoch_ = 0;
     std::string credentialRef_;
+    bool legacyOrigin_ = false;
+    bool versioned_ = false;
 };
