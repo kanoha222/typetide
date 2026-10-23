@@ -1,6 +1,6 @@
 # 翻译配置：环境与进度状态
 
-状态日期：2026-10-21。**原生事务行为 RED 已在 commit `9c7b0e306ea87252eb7b4ed49a0f760d5f579369` 实证：run `39406689216` / job `118574219317` configure/build 成功，实际 `NativeTransactionSelfTest` 报告 21 failure(s)，job exit 1，无 infra exit 2。主会话据此授权本批实现；当前工作树为待发布/待云端验证的实现增量，不是已实证 GREEN。** [文档索引](README.md) · [待办清单](task_list.md)
+状态日期：2026-10-21。**原生事务行为 RED 已在 commit `9c7b0e306ea87252eb7b4ed49a0f760d5f579369` 实证（run `39406689216` / job `118574219317`，21 failure(s)，job exit 1，无 infra exit 2），其实现已在 commit `60f0e4e` 实证 GREEN：run `39576810968` 的 [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success，且同一 commit 全部 6 个 check-run success（Core `119144243672`、Guard `119144243628`、Windows `119144243368`、Mac `119144243054`、Brand `119144243309`）。下一阶段 `translation-execution` 目前只有未配置/未构建/未运行的纯函数 RED 脚手架，预期行为 RED 尚未被观察到。** [文档索引](README.md) · [待办清单](task_list.md)
 
 ## 当前证据
 
@@ -13,7 +13,9 @@
   - 原生存储写保护完整 GREEN（commit `f724b4c`，run `39364511799`，5/5 检查全部成功，job `118438131020` 0 failures）；
   - [原生事务真实行为 RED](https://github.com/kanoha222/typetide/actions/runs/39406689216/job/118574219317)（commit `9c7b0e3`，21 failures）：构建成功、无 fixture/infra 失败。主会话同时确认 Core、NativeGuard 与 Windows 基线仍 PASS。
 
-## 本批实现状态（源码完成，未执行验证）
+## 原生事务实现状态（commit `60f0e4e` 已实证 GREEN）
+
+以下描述的是原生事务批次；其云端执行证据见上文 Native job。Settings/UI/provider 的完整运行时集成、完整旧/新基线、mock/UIA 与实测覆盖率仍未验证。
 
 - `SettingsData` 保存完整非递归值 ledger，保留既有公开字段为可编辑 draft。构造、成功 load、成功 commit 初始化已提交值；`snapshot()` 仅复制 ledger 的 profiles/connection/ref/epoch 和已解析 key，不读 draft，不做凭据 I/O。key 仅驻内存，不记录日志、不序列化；epoch 只驻运行时。
 - schema 2 通过既有 Core `Decode`/`Encode`，完整保留 profiles、三个绑定与全局元数据。结构校验不调用 capability gate；不支持但结构有效的 BuiltIn Formal/Custom 仍可保存。损坏、空文件、超 1 MiB、未知 schema、I/O 失败保持全路径写锁，先于任何凭据访问。
@@ -22,15 +24,22 @@
 - commit 先确定 CoCreateGuid 不透明 ref、序列化最终完整 JSON 并检查 UTF-8 实际字节数，再 stage 新凭据；沿用有效已知 ref 且 key 不变时不重复写凭据。legacy key 无 ref 时即便 key 不变也必须 stage。临时文件使用独占新建、完整 write/flush/close 检查和一次原子替换，无 Sleep；失败仅清理自己的 staged ref/临时文件并保留前驱。成功后一次发布完整值，再清理已知旧记录；清理失败保留成功提交并给出不含秘密的 operational warning。
 - 正式 versioned facade 校验 1..64 ASCII alnum/`_`/`-` ref，规范化 ASCII 大小写，精确使用 `TypeTide/OpenAICompatibleApiKey/<opaqueRef>`。typed read 明确区分 Found、NotFound、Error，仅 WinCred `ERROR_NOT_FOUND` 属于不存在；v2 引用缺失记录或读错误均锁写，不静默改成 NoKey。blob 使用 SDK `CRED_MAX_CREDENTIAL_BLOB_SIZE` 字节上限。
 - `TYPETIDE_DATA_DIR` 无注入 backend 时，生产 facade 使用按隔离目录分组的进程内存 store，支持旧 app self-test 跨 Settings 实例 roundtrip；不会写真实 CM，也不为测试把 key 写回 v2 JSON。有注入时使用 fake；fresh/invalid/v2-NoKey 不 probe backend，保留 strict NativeGuard 零调用契约。
-- 原全部事务断言保留。新增 14 个针对 typed read 错误/NotFound、坏 ref/metadata、全局 roundtrip、const 边界、cleanup warning、blob/最终文件边界、外来候选私有 ref、已有临时文件所有权及大小写规范化的回归用例。**新增用例先于配套实现书写，但未独立运行 RED，亦无本批 GREEN/覆盖率证据。**
+- 原全部事务断言保留。新增 14 个针对 typed read 错误/NotFound、坏 ref/metadata、全局 roundtrip、const 边界、cleanup warning、blob/最终文件边界、外来候选私有 ref、已有临时文件所有权及大小写规范化的回归用例。**commit `60f0e4e` 的已通过 Native suite 经 `RunAdditionalCases` 包含上述 14 个新增用例；它们先于配套实现书写，但无独立观察到的 RED，亦无实测覆盖率，不能据此宣称完整功能验收。**
 - Core/Json/App/UI/Translator/provider、已审 fixture 与原测试预期未改。root 和 standalone CMake 仅登记所需 Settings 模块及追加测试；事务目标仍仅链接 test facade/fake，绝不编译生产 `Credentials.cpp`，存储保护目标仍使用 strict double。
+
+## 下一阶段：translation-execution（纯函数 RED 脚手架，未执行）
+
+- 新增的纯模块：`TranslationExecution.*`（冻结的执行上下文、方向解析、四种 preset 提示词的字节金样、自定义模板渲染、Preview/Prepare、请求体与缓存身份）、`EndpointPolicy.*`（离线 authority 分类器）、`HttpUrl.*`（仅封装 `WinHttpCrackUrl` 的离线解析）。当前全部为编译壳：返回明确的 not-ready 值，不发送网络请求、不读取密钥、不调用服务。
+- 测试目标 `TranslationExecutionSelfTest` 位于 `windows/tests/CMakeLists.txt`，只链接 Json/Language/Types/Profile/Store 与上述新模块（`winhttp` 仅用于离线解析）；不含 Settings/Credentials/Log/GUI/内置模型运行时。独立 job `translation-execution` 沿用已固定的 action SHA、`GITHUB_ENV` 步骤、`contents: read`、真实退出码传播、日志构件与 10 分钟超时。Root `CMakeLists.txt`、`Translator`、`Http.cpp`、`App`、`Settings` 与原有测试不变。
+- 覆盖：preset OpenAI/Ollama 金样、自定义 OpenAI messages 与 Ollama `system`+`prompt` 分离、`think:false` 与 400 重试体、语言/动作方向与 retarget、模板 token（区分大小写、单遍、未知保持字面）、BuiltIn 能力拒绝、authority 矩阵、OpenAI 仅三种 loopback 主机允许 HTTP、Ollama 显式端口冲突拒绝、缓存身份隔离（含 epoch、改名不失效、密钥不入身份）。全部使用合成密钥与合成选中文字，无真实 API 调用。
+- 状态：**未经本地或云端 configure/build/run**；"预期行为 RED"是设计意图，不是已观察结果。在真实 RED 被观察之前不实现正式 helper、请求体、分类器与 `CrackUrl`。
 
 ## 验证入口与剩余门槛
 
-- [工作流](../../../.github/workflows/translation-profiles.yml) 分别运行 `ProfileCoreSelfTest`、`NativeStorageSelfTest`、`NativeTransactionSelfTest`，保留真实失败退出码与日志构件。
-- 本批没有本地 configure/build/run、工具安装/下载、模型/provider 调用、真实 CM 操作或 CI 轮询。等待主会话独立代码/安全审查、发布后云端实际 GREEN；不得以源码审阅代替执行证据。
+- [工作流](../../../.github/workflows/translation-profiles.yml) 分别运行 `ProfileCoreSelfTest`、`NativeStorageSelfTest`、`NativeTransactionSelfTest` 与新增的 `TranslationExecutionSelfTest`，保留真实失败退出码与日志构件。
+- 本批没有本地 configure/build/run、工具安装/下载、模型/provider 调用、真实 CM 操作或 CI 轮询。execution 目标须在主会话独立审查并发布后，由云端给出实际 RED/GREEN；不得以源码审阅代替执行证据。
 - 文件替换与凭据存储跨子系统，不声称断电时具备绝对原子性；崩溃可能留下无引用记录。本实现不枚举、不做启动扫删；只能清理有实际来源证据的记录。
-- 后续仍需 Settings/UI/provider 完整集成、完整旧/新基线、mock/UIA、macOS 最终状态与实测覆盖率 ≥80%（未测不得勾选通过）。公开日志仅含合成数据，不包含私人机器诊断、密钥、ref/hash 或选中文字。
+- 后续仍需 Settings/UI/provider 完整集成、完整旧/新基线、mock/UIA、macOS 功能适配与完整验收及实测覆盖率 ≥80%（未测不得勾选通过）。公开日志仅含合成数据，不包含私人机器诊断、密钥、ref/hash 或选中文字。
 
 ## 集成门槛（待办，非已完成功能）
 

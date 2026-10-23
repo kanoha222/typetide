@@ -183,3 +183,58 @@ jobs:
           path: ${{ env.NATIVE_TRANSACTION_LOG_DIR }}/*.log
           if-no-files-found: warn
           retention-days: 7
+
+  translation-execution:
+    name: Translation execution self-test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-translation-execution'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-translation-execution-logs'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "TRANSLATION_EXECUTION_BUILD_DIR=$buildDir"
+            "TRANSLATION_EXECUTION_LOG_DIR=$logDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure translation execution tests
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:TRANSLATION_EXECUTION_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows/tests -B "$env:TRANSLATION_EXECUTION_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:TRANSLATION_EXECUTION_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build translation execution tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:TRANSLATION_EXECUTION_BUILD_DIR" --config Debug `
+              --target TranslationExecutionSelfTest --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:TRANSLATION_EXECUTION_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run translation execution tests (failures are not masked)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & "$env:TRANSLATION_EXECUTION_BUILD_DIR/Debug/TranslationExecutionSelfTest.exe" 2>&1 |
+              Tee-Object -FilePath "$env:TRANSLATION_EXECUTION_LOG_DIR/self-test.log"
+          exit $LASTEXITCODE
+
+      - name: Preserve configure, build and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: translation-execution-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TRANSLATION_EXECUTION_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7

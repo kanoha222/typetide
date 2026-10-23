@@ -102,3 +102,39 @@ target_link_libraries(NativeTransactionSelfTest PRIVATE
     shell32
     ole32
 )
+
+# Pure translation-execution helpers (prompts, request bodies, endpoint policy, cache
+# identity). Deliberately NO Settings/Credentials/Log/GUI/BuiltInModel sources and no
+# production Translator.cpp/Http.cpp: the target builds only the Core value modules plus
+# the new execution modules. winhttp is linked solely for the offline WinHttpCrackUrl
+# parse in HttpUrl.cpp; no session, connection or request is ever created.
+add_executable(TranslationExecutionSelfTest
+    ../src/Json.cpp
+    ../src/Language.cpp
+    ../src/TranslationTypes.cpp
+    ../src/TranslationProfile.cpp
+    ../src/TranslationProfileStore.cpp
+    ../src/HttpUrl.cpp
+    ../src/EndpointPolicy.cpp
+    ../src/TranslationExecution.cpp
+    TranslationExecutionSupport.cpp
+    TranslationExecutionPromptTests.cpp
+    TranslationExecutionDirectionTests.cpp
+    TranslationExecutionRequestTests.cpp
+    TranslationExecutionClassifierTests.cpp
+    TranslationExecutionEndpointTests.cpp
+    TranslationExecutionCacheTests.cpp
+    TranslationExecutionSelfTest.cpp
+)
+
+target_compile_features(TranslationExecutionSelfTest PRIVATE cxx_std_20)
+set_target_properties(TranslationExecutionSelfTest PROPERTIES CXX_EXTENSIONS OFF)
+target_compile_definitions(TranslationExecutionSelfTest PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+if(MSVC)
+    target_compile_options(TranslationExecutionSelfTest PRIVATE /utf-8 /EHsc /W4)
+    # Same test-only Json.cpp header workaround as the other standalone targets.
+    target_compile_options(TranslationExecutionSelfTest PRIVATE /FIcstring /FIcstdlib)
+endif()
+
+target_link_libraries(TranslationExecutionSelfTest PRIVATE winhttp)
