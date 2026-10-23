@@ -6,8 +6,10 @@ on:
   pull_request:
     paths:
       - .github/workflows/translation-profiles.yml
+      - windows/CMakeLists.txt
       - windows/src/**
       - windows/tests/**
+      - windows/scripts/mock-openai.ps1
 
 permissions:
   contents: read
@@ -18,16 +20,23 @@ concurrency:
 
 jobs:
   profile-core:
-    name: Profile core self-test (JSON baseline)
+    name: Profile core self-test
     runs-on: windows-latest
     timeout-minutes: 10
     defaults:
       run:
         shell: pwsh
-    env:
-      PROFILE_CORE_BUILD_DIR: ${{ runner.temp }}/typetide-profile-core
-      PROFILE_CORE_LOG_DIR: ${{ runner.temp }}/typetide-profile-core-logs
     steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-profile-core'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-profile-core-logs'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "PROFILE_CORE_BUILD_DIR=$buildDir"
+            "PROFILE_CORE_LOG_DIR=$logDir"
+          )
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,7 +47,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$env:PROFILE_CORE_LOG_DIR" | Out-Null
           $PSNativeCommandUseErrorActionPreference = $false
           & cmake -S windows/tests -B "$env:PROFILE_CORE_BUILD_DIR" -A x64 `
-              -DPROFILE_CORE_JSON_ONLY=ON 2>&1 |
+              -DPROFILE_CORE_JSON_ONLY=OFF 2>&1 |
               Tee-Object -FilePath "$env:PROFILE_CORE_LOG_DIR/configure.log"
           exit $LASTEXITCODE
 
@@ -63,5 +72,249 @@ jobs:
         with:
           name: profile-core-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.PROFILE_CORE_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  native-storage:
+    name: Native settings storage self-test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-native-storage'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-native-storage-logs'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "NATIVE_STORAGE_BUILD_DIR=$buildDir"
+            "NATIVE_STORAGE_LOG_DIR=$logDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure standalone native storage tests
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:NATIVE_STORAGE_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows/tests -B "$env:NATIVE_STORAGE_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_STORAGE_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build standalone native storage tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:NATIVE_STORAGE_BUILD_DIR" --config Debug `
+              --target NativeStorageSelfTest --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_STORAGE_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run native storage tests (failures are not masked)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & "$env:NATIVE_STORAGE_BUILD_DIR/Debug/NativeStorageSelfTest.exe" 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_STORAGE_LOG_DIR/self-test.log"
+          exit $LASTEXITCODE
+
+      - name: Preserve configure, build and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-storage-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_STORAGE_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  native-transaction:
+    name: Native transaction self-test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-native-transaction'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-native-transaction-logs'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "NATIVE_TRANSACTION_BUILD_DIR=$buildDir"
+            "NATIVE_TRANSACTION_LOG_DIR=$logDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure native transaction tests
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:NATIVE_TRANSACTION_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows/tests -B "$env:NATIVE_TRANSACTION_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_TRANSACTION_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build native transaction tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:NATIVE_TRANSACTION_BUILD_DIR" --config Debug `
+              --target NativeTransactionSelfTest --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_TRANSACTION_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run native transaction tests (failures are not masked)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & "$env:NATIVE_TRANSACTION_BUILD_DIR/Debug/NativeTransactionSelfTest.exe" 2>&1 |
+              Tee-Object -FilePath "$env:NATIVE_TRANSACTION_LOG_DIR/self-test.log"
+          exit $LASTEXITCODE
+
+      - name: Preserve configure, build and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-transaction-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.NATIVE_TRANSACTION_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  translation-execution:
+    name: Translation execution self-test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-translation-execution'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-translation-execution-logs'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "TRANSLATION_EXECUTION_BUILD_DIR=$buildDir"
+            "TRANSLATION_EXECUTION_LOG_DIR=$logDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure translation execution tests
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:TRANSLATION_EXECUTION_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows/tests -B "$env:TRANSLATION_EXECUTION_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:TRANSLATION_EXECUTION_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build translation execution tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:TRANSLATION_EXECUTION_BUILD_DIR" --config Debug `
+              --target TranslationExecutionSelfTest --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:TRANSLATION_EXECUTION_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run translation execution tests (failures are not masked)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & "$env:TRANSLATION_EXECUTION_BUILD_DIR/Debug/TranslationExecutionSelfTest.exe" 2>&1 |
+              Tee-Object -FilePath "$env:TRANSLATION_EXECUTION_LOG_DIR/self-test.log"
+          exit $LASTEXITCODE
+
+      - name: Preserve configure, build and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: translation-execution-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TRANSLATION_EXECUTION_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  translation-runtime:
+    name: Translation runtime mock self-test
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-runtime-build'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-runtime-logs'
+          $dataDir = Join-Path $env:RUNNER_TEMP 'typetide-runtime-data'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "RUNTIME_BUILD_DIR=$buildDir"
+            "RUNTIME_LOG_DIR=$logDir"
+            "RUNTIME_DATA_DIR=$dataDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure TypeTide
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNTIME_LOG_DIR", "$env:RUNTIME_DATA_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows -B "$env:RUNTIME_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:RUNTIME_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build TypeTide
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:RUNTIME_BUILD_DIR" --config Release --target TypeTide --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:RUNTIME_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run runtime self-test against the loopback mock (failures are not masked)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $port = 8199
+          $record = Join-Path $env:RUNTIME_LOG_DIR 'mock-requests.jsonl'
+          $mock = Start-Process -FilePath pwsh -PassThru -NoNewWindow `
+              -ArgumentList '-NoProfile', '-File', 'windows/scripts/mock-openai.ps1', '-Port', "$port", '-RecordFile', $record `
+              -RedirectStandardOutput (Join-Path $env:RUNTIME_LOG_DIR 'mock.log') `
+              -RedirectStandardError (Join-Path $env:RUNTIME_LOG_DIR 'mock-error.log')
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 60 -and -not $ready; $i++) {
+              $client = [System.Net.Sockets.TcpClient]::new()
+              try { $ready = $client.ConnectAsync('127.0.0.1', $port).Wait(500) -and $client.Connected } catch {}
+              finally { $client.Dispose() }
+              if (-not $ready) { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $ready) { Write-Output 'mock provider did not start'; exit 2 }
+            $env:TYPETIDE_DATA_DIR = $env:RUNTIME_DATA_DIR
+            $env:TYPETIDE_MOCK_PORT = "$port"
+            $env:TYPETIDE_MOCK_RECORD = $record
+            $log = Join-Path $env:RUNTIME_LOG_DIR 'self-test.log'
+            $p = Start-Process -FilePath "$env:RUNTIME_BUILD_DIR/Release/TypeTide.exe" `
+                -ArgumentList '--selftest-runtime' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $log
+            Get-Content -LiteralPath $log
+            exit $p.ExitCode
+          } finally {
+            Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Preserve configure, build, mock and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: translation-runtime-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.RUNTIME_LOG_DIR }}/*
           if-no-files-found: warn
           retention-days: 7

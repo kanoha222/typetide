@@ -11,11 +11,22 @@ add_executable(TypeTide WIN32
     src/LocalDiagnostics.cpp
     src/Json.cpp
     src/Language.cpp
+    src/TranslationTypes.cpp
+    src/TranslationProfile.cpp
+    src/TranslationProfileStore.cpp
     src/Settings.cpp
+    src/SettingsCodec.cpp
+    src/SettingsCodecGlobals.cpp
+    src/SettingsIdentifier.cpp
+    src/SettingsStorage.cpp
+    src/SettingsTransaction.cpp
     src/Credentials.cpp
     src/Clipboard.cpp
     src/Keyboard.cpp
     src/Http.cpp
+    src/HttpUrl.cpp
+    src/EndpointPolicy.cpp
+    src/TranslationExecution.cpp
     src/Translator.cpp
     src/BuiltInModel.cpp
     src/OllamaModels.cpp
@@ -31,6 +42,7 @@ add_executable(TypeTide WIN32
     src/LaunchAtLogin.cpp
     src/UpdateChecker.cpp
     src/SelfTest.cpp
+    src/RuntimeSelfTest.cpp
     src/TypeTide.rc
     src/TypeTide.manifest
 )

@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前阻塞：等待云端实际行为 RED，业务实现前暂停。** 设计文档已完成；声明/测试文件与独立 Windows CI 入口已准备，仅经过静态审查。用户已选择使用 GitHub Windows runner 的预装工具链；工作流尚未发布运行，没有 C++ 编译、实际 RED/GREEN 或覆盖率证据。严格 JSON 断言预期失败不等于已观察到失败；缺少工具链、配置或编译失败均**不是行为 RED**。详见[环境状态](environment_status.md)。以下 24 项实现/验证任务全部保持待办；文档地图见[索引](README.md)。
+**当前状态：commit `9c7b0e3` 的原生事务已实证行为 RED（run `39406689216` / job `118574219317`：21 failure(s)），其实现在 commit `60f0e4e` 实证 GREEN（run `39576810968` / [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success；全部 6 个 check-run success）。Phase 2 的纯函数测试（`TranslationExecutionSelfTest` 及 `translation-execution` job）已在 commit `a117a72` 实证行为 RED（314 failure(s)，exit 1），纯函数实现已在 commit `f819c2b` 实证 GREEN（[job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)，0 failure(s)，全部 7 个 check-run success）。运行时接入的测试脚手架（新增纯函数用例与 job `translation-runtime`）已提交，行为 RED 尚未观察到；覆盖率仍未验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`，auto-fix 开启，不合并、不发版。本批包含完整值 ledger/committed snapshot、v2 与 globals codec、安全 mutable/const save、凭据暂存与回滚/来源受限清理、typed read 与隔离内存后端；原断言保留，追加 14 项边界回归未独立运行 RED。Settings/UI/provider 完整集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -15,12 +15,14 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 
 ## Pre-code prerequisite — environment and baseline
 
-- [ ] Verify the GitHub Windows runner's preinstalled MSVC, Windows SDK and CMake with actual standalone configure/build/run evidence. Coverage tooling remains unverified; do not install or download tools in this bootstrap.
-- [ ] Record existing build/self-test/mock/UIA baseline and concrete environment blockers. Keep versions/releases/settings unchanged outside the approved implementation.
+- [x] Verify the GitHub Windows runner's preinstalled MSVC, Windows SDK and CMake with actual standalone configure/build/run evidence ([JSON-only RED job](https://github.com/kanoha222/typetide/actions/runs/39193075553/job/117869875089)). Coverage tooling remains unverified; do not install or download tools in this bootstrap.
+- [ ] Record the complete existing build/self-test/mock/UIA baseline and remaining verification gaps. Keep versions/releases/settings unchanged outside the approved implementation.
+  - Existing Windows app self-test passed; macOS was pending at that historical observation, but [Mac CI at commit `60f0e4e`](https://github.com/kanoha222/typetide/actions/runs/39576811019/job/119144243054) now confirms success; feature-level macOS adaptation remains unimplemented, and full feature acceptance/baseline/mock/UIA/E2E/measured coverage remain pending. The local SDK route was abandoned after an integrity mismatch; cloud Windows is the active route, not an unresolved local-install blocker.
 
 ## Phase 1 — RED → GREEN: profile model and migration
 
 - [ ] RED: add field/enum/ID/reference and size-boundary failures, schema number checks, full-consumption/depth/string/Unicode failures, multiline/emoji roundtrips, storage-state save blocking, and atomic-save failure cases.
+  - JSON-only subset: [Windows JSON 阶段实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39221251003/job/117956815530)，commit 439b9ff。[完整 profile 测试集实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39226040932/job/117972461843)，commit 708a593，112 failure(s)。[最新测试运行实证 1 failure(s)](https://github.com/kanoha222/typetide/actions/runs/39233983588/job/117998489088)，commit d469920。[纯核心完整 GREEN 已经验证](https://github.com/kanoha222/typetide/actions/runs/39356274299/job/118411675231)，commit df2fc7c，0 failures。[原生设置存储实证 10 failure(s) 真实 RED](https://github.com/kanoha222/typetide/actions/runs/39361446003/job/118428324821)，commit 231883a。[原生设置存储写保护实证 5/5 GREEN](https://github.com/kanoha222/typetide/actions/runs/39364511799/job/118438131020)，commit f724b4c。[原生事务实证 21 failure(s) 行为 RED](https://github.com/kanoha222/typetide/actions/runs/39406689216/job/118574219317)，commit `9c7b0e3`，configure/build 成功、无 infra 2。获授权后实现 `SettingsData` 非递归 ledger、profile-aware instance commit/committed snapshot、v2+全 globals codec、CoCreateGuid ref、先完整字节限额再 stage/flush/replace/发布/已知来源清理、typed credential reads、mutable/const save 边界及隔离进程内存 store；原独立 link-time facade 与 strict double 隔离保留。追加 14 项边界回归先书写但未独立观察到 RED；本批已发布为 commit `60f0e4e`，[Native suite 实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) 经 `RunAdditionalCases` 包含这些新增用例，但未测覆盖率、未本地构建/运行或触及真实 CM，亦不代表完整功能验收。
 - [ ] RED: prove migration binds each slot by action (including swapped/same actions), selection binds read, credential handling stays separate, and unsupported-but-valid profiles survive unchanged.
 - [ ] GREEN: implement decoupled types/profile/store with existing JSON APIs, unified limits, candidate validation, atomic persistence/publication, and all-path storage guards.
 - [ ] Record failing/passing evidence; refactor without changing legacy behavior.
@@ -28,6 +30,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 ## Phase 2 — RED → GREEN: prompts, model routing, cache
 
 - [ ] RED: cover full custom override, one-pass/case-sensitive/unknown variables, unknown/third-language sources, all direction rules, preset compatibility, and exact OpenAI/Ollama role/payload/model contracts including `think` fallback.
+  - 测试：`windows/tests/TranslationExecution*Tests.cpp`、目标 `TranslationExecutionSelfTest`、job `translation-execution`。[实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/39910106404/job/120270873137)：commit `a117a72`，configure/build 成功，314 failure(s)，exit 1（首推 `b2327d1` 为测试代码 MSVC 编译错误，已修）。随后 commit `f819c2b` 实现 `TranslationExecution.*`/`EndpointPolicy.*`/`HttpUrl.*` 与 `profiles::IsBlankText`，[实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)（0 failure(s)）。仍未实现：Http.cpp 共享 `CrackUrl` 并禁用重定向、Translator 转发——均属运行时阶段。
 - [ ] RED: cover BuiltIn capability refusal, blank-only result failure, exact output whitespace, cache payload/model/endpoint isolation, and old-request isolation after a connection/credential epoch change.
 - [ ] GREEN: implement immutable effective requests, role-preserving adapters and epoch-aware unambiguous cache identity; retain existing streaming and compatibility guards.
 - [ ] Verify unit and two-provider mock evidence, keeping credentials and content out of logs.
@@ -54,3 +57,10 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 - [ ] Report full-project baseline and UI coverage separately; list every unexecuted check and environment limitation.
 - [ ] Complete code-reviewer-role and security review, resolve high/critical findings, rerun affected checks, and fill evidence/status back into these documents.
 - [ ] Accept only when product, migration, session identity, local/cloud clarity, privacy, tests, and measured coverage gates are met. No automatic commit, push, or release.
+
+## Integration gate — 待办，非已完成功能
+
+- [ ] 公开 `Settings` 字段目前仍是旧版可编辑 draft，生产 `Translator` 在下一次集成前仍读取它们；本批不宣称完整运行时激活。保存失败时旧版行为不变，未提交的 draft 可能继续保留。
+- [ ] 功能验收前，UI 必须使用 candidate commit，并在提交后重新同步控件、处理 error + warning / 只读状态；`Translator` 必须冻结 committed snapshot，不再读取 draft。
+- [ ] `.tmp` 的 `CREATE_NEW` 冲突会保护未知文件，但需要明确的恢复 UX，而不是静默删除非自有临时文件。
+- [ ] `TYPETIDE_DATA_DIR` 下的进程内存凭据仅用于测试，不是持久化的生产路径。

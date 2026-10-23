@@ -132,6 +132,16 @@ void TestProfilePromptModeValidation() {
     candidate.systemPrompt = "Leave {{unknown_variable}} literal.";
     const auto warning = profiles::Validate(candidate);
     Check(warning.ok && !warning.warnings.empty(), "unknown variable is nonblocking warning");
+    candidate.systemPrompt = "Leave {{secret_synthetic_token_123}} literal.";
+    const auto privacyWarning = profiles::Validate(candidate);
+    Check(privacyWarning.ok && !privacyWarning.warnings.empty(), "unknown variable warning emitted");
+    bool leakedToken = false;
+    for (const auto& w : privacyWarning.warnings) {
+        if (w.find("secret_synthetic_token_123") != std::string::npos) leakedToken = true;
+    }
+    Check(!leakedToken, "custom prompt warning does not leak user template variable");
+    Check(candidate.systemPrompt == "Leave {{secret_synthetic_token_123}} literal.",
+          "validation preserves prompt and placeholders verbatim");
 
 }
 
@@ -207,6 +217,14 @@ void TestProfileIdentifierValidation() {
     Check(!profiles::Validate(candidate).ok, "multibyte model above byte limit rejected");
     candidate.model = " \t";
     Check(!profiles::Validate(candidate).ok, "blank remote model rejected");
+    candidate.model = "bad\nmodel";
+    Check(!profiles::Validate(candidate).ok, "model control newline rejected");
+    candidate.model = "bad\tmodel";
+    Check(!profiles::Validate(candidate).ok, "model tab rejected");
+    candidate.model = std::string("bad\0model", 9);
+    Check(!profiles::Validate(candidate).ok, "model embedded NUL rejected");
+    candidate.model = std::string("bad\xC2\x85model", 10);
+    Check(!profiles::Validate(candidate).ok, "model C1 control character rejected");
     candidate.model = std::string("\xC2", 1);
     Check(!profiles::Validate(candidate).ok, "invalid UTF-8 model rejected");
 
@@ -255,6 +273,11 @@ void TestProfileCapabilities() {
     Check(profiles::ValidateCapability(candidate).ok, "Ollama custom supported");
     candidate.backend = TranslationBackend::OpenAI;
     Check(profiles::ValidateCapability(candidate).ok, "OpenAI custom supported");
+    candidate.backend = static_cast<TranslationBackend>(999);
+    Check(!profiles::ValidateCapability(candidate).ok, "invalid backend fails capability check");
+    candidate = ExampleProfile();
+    candidate.name.clear();
+    Check(!profiles::ValidateCapability(candidate).ok, "structurally invalid profile fails capability check");
 }
 
 void TestConfigurationValidation() {
@@ -275,7 +298,15 @@ void TestConfigurationValidation() {
     Check(!profiles::Validate(candidate).ok, "cannot delete final profile");
     candidate = original;
     candidate.profiles[1].id = candidate.profiles[0].id;
-    Check(!profiles::Validate(candidate).ok, "duplicate stable IDs rejected");
+    const auto dupRes = profiles::Validate(candidate);
+    Check(!dupRes.ok, "duplicate stable IDs rejected");
+    auto candidatePrivacy = original;
+    candidatePrivacy.profiles[1].id = "secret-synthetic-id-999";
+    candidatePrivacy.profiles[0].id = "secret-synthetic-id-999";
+    const auto dupPrivacyRes = profiles::Validate(candidatePrivacy);
+    Check(!dupPrivacyRes.ok, "duplicate custom profile IDs rejected");
+    Check(dupPrivacyRes.error.find("secret-synthetic-id-999") == std::string::npos,
+          "duplicate ID error does not leak user profile ID value");
     candidate = original;
     candidate.bindings.shortcut1ProfileId = "missing";
     Check(!profiles::Validate(candidate).ok, "shortcut1 dangling binding rejected");
@@ -467,8 +498,35 @@ void TestSchemaVersions() {
     future["schemaVersion"] = 3;
     Check(profiles::store::Decode(json::Value(future)).state == ProfileLoadState::UnsupportedSchema,
           "future schema explicitly distinguished from corruption");
+    auto maxFuture = profiles::store::Encode(configuration);
+    maxFuture["schemaVersion"] = static_cast<double>(std::numeric_limits<int>::max());
+    Check(profiles::store::Decode(json::Value(maxFuture)).state == ProfileLoadState::UnsupportedSchema,
+          "max int schema version classified as unsupported schema");
     Check(profiles::store::Decode(json::Value(json::Array{})).state == ProfileLoadState::Invalid,
           "settings root must be object");
+}
+
+void TestDirectDuplicateDecoding(const ProfileConfiguration& configuration) {
+    auto directDup = profiles::store::Encode(configuration);
+    const auto itProfiles = directDup.find("profiles");
+    const auto* arr = itProfiles == directDup.end() ? nullptr : itProfiles->second.array();
+    Check(arr && arr->size() >= 2, "encoder provides multi-profile array for direct dup test");
+    if (!arr || arr->size() < 2) return;
+    auto items = *arr;
+    const auto* secondObj = items[1].object();
+    const auto* firstObj = items[0].object();
+    Check(firstObj && secondObj, "profile items are JSON objects for direct dup test");
+    if (!firstObj || !secondObj) return;
+    auto modifiedSecond = *secondObj;
+    const std::string firstId = (*firstObj).at("id").asString();
+    modifiedSecond["id"] = firstId;
+    items[1] = json::Value(std::move(modifiedSecond));
+    directDup["profiles"] = json::Value(std::move(items));
+    directDup["shortcut1ProfileId"] = firstId;
+    directDup["shortcut2ProfileId"] = firstId;
+    directDup["selectionProfileId"] = firstId;
+    Check(profiles::store::Decode(json::Value(directDup)).state == ProfileLoadState::Invalid,
+          "direct serialized duplicate IDs rejected while decoding");
 }
 
 void TestSchemaFields() {
@@ -503,6 +561,16 @@ void TestSchemaFields() {
     Check(profiles::store::Decode(json::Value(profiles::store::Encode(duplicate))).state ==
               ProfileLoadState::Invalid,
           "duplicate IDs rejected while decoding");
+    ProfileConfiguration emptyConfig;
+    Check(profiles::store::Decode(json::Value(profiles::store::Encode(emptyConfig))).state ==
+              ProfileLoadState::Invalid,
+          "encoded empty configuration decodes as invalid without legacy fallback");
+    auto badBinding = configuration;
+    badBinding.bindings.shortcut1ProfileId = "missing";
+    Check(profiles::store::Decode(json::Value(profiles::store::Encode(badBinding))).state ==
+              ProfileLoadState::Invalid,
+          "encoded invalid binding decodes as invalid without legacy fallback");
+    TestDirectDuplicateDecoding(configuration);
 }
 
 #endif

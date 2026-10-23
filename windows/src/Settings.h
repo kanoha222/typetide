@@ -5,10 +5,11 @@
 #pragma once
 #include <windows.h>
 #include "Language.h"
+#include "TranslationProfile.h"
+#include "TranslationTypes.h"
+#include <cstdint>
 #include <string>
 #include <vector>
-
-enum class TranslationBackend { BuiltIn, Ollama, OpenAI };
 
 /// 划词触发方式
 enum class SelectionTrigger {
@@ -17,13 +18,11 @@ enum class SelectionTrigger {
     Auto,  // 划词后直接弹出翻译
 };
 
-enum class ShortcutAction {
-    SmartPopup,
-    NativePopup,
-    ForeignPopup,
-    SmartReplace,
-    NativeReplace,
-    ForeignReplace,
+enum class StorageState {
+    Ready,
+    Invalid,
+    UnsupportedSchema,
+    IoError,
 };
 
 /// 全局快捷键（RegisterHotKey 语义）
@@ -36,7 +35,22 @@ struct Hotkey {
     bool operator==(const Hotkey&) const = default;
 };
 
-struct Settings {
+struct SettingsSnapshot {
+    ProfileConfiguration profileConfig;
+    uint64_t connectionEpoch = 0;
+    TranslationBackend backend = TranslationBackend::BuiltIn;
+    std::string ollamaHost;
+    int ollamaPort = 11434;
+    std::string ollamaModel;
+    std::string openAIBaseURL;
+    std::string openAIModel;
+    std::string openAIKey; // Resolved secret: memory only, never serialized/logged.
+    std::string openAICredentialRef;
+    bool hasCompletedFirstLaunch = false;
+};
+
+// Full value ledger; never contains Settings, a Settings pointer, or another ledger.
+struct SettingsData {
     bool enabled = true;
     TranslationBackend backend = TranslationBackend::BuiltIn;
 
@@ -74,10 +88,46 @@ struct Settings {
     bool hasCompletedFirstLaunch = false;
     long long lastUpdateCheck = 0;  // Unix 秒
 
-    // --- 持久化 ---
+    // 翻译配置集合（v2 核心）
+    ProfileConfiguration profileConfig = profiles::Defaults();
+
+    bool operator==(const SettingsData&) const = default;
+};
+
+// Public inherited fields remain editable drafts for existing main-thread callers.
+struct Settings : SettingsData {
+    Settings();
+
+    StorageState storageState() const { return storageState_; }
+    const std::string& storageError() const { return storageError_; }
+    const std::string& storageWarning() const { return storageWarning_; }
+    bool isReadOnly() const { return storageState_ != StorageState::Ready; }
+    uint64_t connectionEpoch() const { return connectionEpoch_; }
+    const std::string& credentialRef() const { return credentialRef_; }
+
+    bool commit(const Settings& candidate, std::string* error = nullptr);
+    // Resolved committed values only. No credential I/O; copy on the main thread.
+    SettingsSnapshot snapshot() const;
+
     static Settings& shared();
     void load();
-    /// 原子保存；失败时保留旧文件并返回 false。
-    bool save() const;
+    // Mutable legacy callers commit the actual receiver, never the singleton.
+    bool save(std::string* error = nullptr);
+    // Only an identical, already-versioned ledger may be written by a const receiver.
+    // Dirty values or legacy migration require mutable save()/commit().
+    bool save(std::string* error = nullptr) const;
     static std::wstring filePath();
+
+private:
+    bool commitReady(const Settings& candidate, std::string* error);
+    void adopt(SettingsData data, std::string ref, bool legacyOrigin,
+               bool versioned, uint64_t epoch);
+    SettingsData committed_;
+    StorageState storageState_ = StorageState::Ready;
+    std::string storageError_;
+    std::string storageWarning_;
+    uint64_t connectionEpoch_ = 0;
+    std::string credentialRef_;
+    bool legacyOrigin_ = false;
+    bool versioned_ = false;
 };
