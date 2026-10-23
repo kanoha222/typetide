@@ -1,6 +1,6 @@
 # 翻译配置：环境与进度状态
 
-状态日期：2026-10-21。**原生事务行为 RED 已在 commit `9c7b0e306ea87252eb7b4ed49a0f760d5f579369` 实证（run `39406689216` / job `118574219317`，21 failure(s)，job exit 1，无 infra exit 2），其实现已在 commit `60f0e4e` 实证 GREEN：run `39576810968` 的 [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success，且同一 commit 全部 6 个 check-run success（Core `119144243672`、Guard `119144243628`、Windows `119144243368`、Mac `119144243054`、Brand `119144243309`）。下一阶段 `translation-execution` 已在 commit `a117a72` 实证行为 RED（run `39910106404` / [job `120270873137`](https://github.com/kanoha222/typetide/actions/runs/39910106404/job/120270873137)，configure/build 成功，314 failure(s)，exit 1）；纯函数实现已提交，云端 GREEN 尚未被观察到。** [文档索引](README.md) · [待办清单](task_list.md)
+状态日期：2026-10-23。**原生事务行为 RED 已在 commit `9c7b0e306ea87252eb7b4ed49a0f760d5f579369` 实证（run `39406689216` / job `118574219317`，21 failure(s)，job exit 1，无 infra exit 2），其实现已在 commit `60f0e4e` 实证 GREEN：run `39576810968` 的 [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success，且同一 commit 全部 6 个 check-run success（Core `119144243672`、Guard `119144243628`、Windows `119144243368`、Mac `119144243054`、Brand `119144243309`）。下一阶段 `translation-execution` 已在 commit `a117a72` 实证行为 RED（run `39910106404` / [job `120270873137`](https://github.com/kanoha222/typetide/actions/runs/39910106404/job/120270873137)，configure/build 成功，314 failure(s)，exit 1），其纯函数实现已在 commit `f819c2b` 实证 GREEN（run `39911587455` / [job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)：0 failure(s)；同一 commit 全部 7 个 check-run success）。运行时集成尚未开始。** [文档索引](README.md) · [待办清单](task_list.md)
 
 ## 当前证据
 
@@ -27,12 +27,12 @@
 - 原全部事务断言保留。新增 14 个针对 typed read 错误/NotFound、坏 ref/metadata、全局 roundtrip、const 边界、cleanup warning、blob/最终文件边界、外来候选私有 ref、已有临时文件所有权及大小写规范化的回归用例。**commit `60f0e4e` 的已通过 Native suite 经 `RunAdditionalCases` 包含上述 14 个新增用例；它们先于配套实现书写，但无独立观察到的 RED，亦无实测覆盖率，不能据此宣称完整功能验收。**
 - Core/Json/App/UI/Translator/provider、已审 fixture 与原测试预期未改。root 和 standalone CMake 仅登记所需 Settings 模块及追加测试；事务目标仍仅链接 test facade/fake，绝不编译生产 `Credentials.cpp`，存储保护目标仍使用 strict double。
 
-## 下一阶段：translation-execution（行为 RED 已实证，GREEN 待验证）
+## translation-execution 纯函数（commit `f819c2b` 已实证 GREEN）
 
 - 新增的纯模块：`TranslationExecution.*`（冻结的执行上下文、方向解析、四种 preset 提示词的字节金样、自定义模板渲染、Preview/Prepare、请求体与缓存身份）、`EndpointPolicy.*`（离线 authority 分类器）、`HttpUrl.*`（仅封装 `WinHttpCrackUrl` 的离线解析）。RED 阶段为返回 not-ready 值的编译壳；实现提交后：preset 提示词与旧 builder 逐字节一致，自定义模板单遍替换两个精确 token、未知 token 保持字面并只给固定 warning 码，分类器先做严格 ASCII authority 校验再与 WinHTTP 解析结果交叉核对 host/port/scheme，缓存身份为长度前缀字段且不含密钥/ref/profile ID/名称。`profiles::IsBlankText` 复用 `Validate` 的空白定义。全程不发送网络请求、不读取密钥、不调用服务。
 - 测试目标 `TranslationExecutionSelfTest` 位于 `windows/tests/CMakeLists.txt`，只链接 Json/Language/Types/Profile/Store 与上述新模块（`winhttp` 仅用于离线解析）；不含 Settings/Credentials/Log/GUI/内置模型运行时。独立 job `translation-execution` 沿用已固定的 action SHA、`GITHUB_ENV` 步骤、`contents: read`、真实退出码传播、日志构件与 10 分钟超时。Root `CMakeLists.txt`、`Translator`、`Http.cpp`、`App`、`Settings` 与原有测试不变。
 - 覆盖：preset OpenAI/Ollama 金样、自定义 OpenAI messages 与 Ollama `system`+`prompt` 分离、`think:false` 与 400 重试体、语言/动作方向与 retarget、模板 token（区分大小写、单遍、未知保持字面）、BuiltIn 能力拒绝、authority 矩阵、OpenAI 仅三种 loopback 主机允许 HTTP、Ollama 显式端口冲突拒绝、缓存身份隔离（含 epoch、改名不失效、密钥不入身份）。全部使用合成密钥与合成选中文字，无真实 API 调用。
-- 状态：首次推送 `b2327d1` 因一处测试循环的 MSVC C3535 编译失败；仅修该测试后，commit `a117a72` 云端实证行为 RED（configure/build 成功、314 个断言失败、exit 1、无崩溃或 infra 失败）。随后的提交实现上述 helper，其云端 GREEN **尚未被观察到**；未本地构建/运行，未测覆盖率。
+- 状态：首次推送 `b2327d1` 因一处测试循环的 MSVC C3535 编译失败；仅修该测试后，commit `a117a72` 云端实证行为 RED（configure/build 成功、314 个断言失败、exit 1、无崩溃或 infra 失败）。commit `f819c2b` 实现上述 helper 并实证 GREEN（[job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)，0 failure(s)，全部 7 个 check-run success）。这只证明纯函数契约；Translator/Http.cpp/UI 尚未接入，未本地构建/运行，未测覆盖率。已知差异（待后续统一）：保存时 `profiles::Validate` 的未知变量警告对 `{{}}` 等形状比渲染器更宽。
 
 ## 验证入口与剩余门槛
 
