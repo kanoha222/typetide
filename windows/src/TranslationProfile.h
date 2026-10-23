@@ -55,6 +55,10 @@ ValidationResult Validate(const ProfileConfiguration& configuration);
 ValidationResult ValidateCapability(const TranslationProfile& profile);
 ProfileConfiguration Defaults();
 
+// Empty or Unicode-whitespace-only valid UTF-8: the "blank" rule Validate applies to
+// custom prompts and remote model names. Invalid UTF-8 is not blank (Validate rejects it).
+bool IsBlankText(const std::string& utf8);
+
 // Returned pointers are short-lived views. Copy before asynchronous use.
 const TranslationProfile* Find(const ProfileConfiguration& configuration,
                                const std::string& id);

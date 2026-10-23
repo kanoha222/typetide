@@ -236,6 +236,11 @@ ValidationResult ValidatePromptAndModel(const TranslationProfile& profile,
 
 } // namespace
 
+bool IsBlankText(const std::string& utf8) {
+    bool allWhitespace = false;
+    return AnalyzeUtf8(utf8, nullptr, nullptr, &allWhitespace) && allWhitespace;
+}
+
 ValidationResult Validate(const TranslationProfile& profile) {
     auto enumRes = ValidateEnums(profile);
     if (!enumRes.ok) return enumRes;
