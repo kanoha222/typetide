@@ -13,6 +13,7 @@ int main() {
     RunClassifierTests();
     RunPrepareEndpointTests();
     RunCacheTests();
+    RunRuntimeContractTests();
     std::printf("[execution] %d failure(s)\n", FailureCount());
     return FailureCount() == 0 ? 0 : 1;
 }

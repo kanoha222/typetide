@@ -310,4 +310,20 @@ PreparedRequest Prepare(const ExecutionContext& context, const std::wstring& tex
     return request;
 }
 
+// RED scaffold: runtime-facing helpers return their not-ready values until the
+// runtime contract tests have been observed failing on CI.
+ContextPtr FreezeBound(const ProfileConfiguration& /*configuration*/, ProfileEntry /*entry*/,
+                       ShortcutAction /*action*/, ConnectionSnapshot /*connection*/) {
+    return nullptr;
+}
+
+std::optional<std::wstring> DeliveredOutput(const TranslationProfile& /*profile*/,
+                                            const std::wstring& /*raw*/) {
+    return std::nullopt;
+}
+
+std::wstring PrepareErrorMessage(PrepareStatus /*status*/, TranslationBackend /*backend*/) {
+    return {};
+}
+
 } // namespace execution

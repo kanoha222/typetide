@@ -24,6 +24,9 @@ add_executable(TypeTide WIN32
     src/Clipboard.cpp
     src/Keyboard.cpp
     src/Http.cpp
+    src/HttpUrl.cpp
+    src/EndpointPolicy.cpp
+    src/TranslationExecution.cpp
     src/Translator.cpp
     src/BuiltInModel.cpp
     src/OllamaModels.cpp
@@ -39,6 +42,7 @@ add_executable(TypeTide WIN32
     src/LaunchAtLogin.cpp
     src/UpdateChecker.cpp
     src/SelfTest.cpp
+    src/RuntimeSelfTest.cpp
     src/TypeTide.rc
     src/TypeTide.manifest
 )

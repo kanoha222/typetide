@@ -66,5 +66,6 @@ void RunBuiltInTests();
 void RunClassifierTests();
 void RunPrepareEndpointTests();
 void RunCacheTests();
+void RunRuntimeContractTests();
 
 } // namespace execution_test

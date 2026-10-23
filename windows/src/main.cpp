@@ -6,6 +6,7 @@
 #include "App.h"
 #include "BuiltInModel.h"
 #include "CrashDump.h"
+#include "RuntimeSelfTest.h"
 #include "SelfTest.h"
 #include "Util.h"
 #include <objbase.h>
@@ -16,7 +17,7 @@
 
 namespace {
 
-int runSelfTest(bool live) {
+void attachStdout() {
     // stdout 已被重定向（管道/文件）就直接用；否则挂到父进程控制台
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (out == nullptr || out == INVALID_HANDLE_VALUE) {
@@ -25,9 +26,20 @@ int runSelfTest(bool live) {
         freopen_s(&f, "CONOUT$", "w", stdout);
         SetConsoleOutputCP(CP_UTF8);
     }
+}
+
+int runSelfTest(bool live) {
+    attachStdout();
     int failures = RunSelfTests(live);
     fflush(stdout);
     return failures;
+}
+
+int runRuntimeSelfTest() {
+    attachStdout();
+    const int result = RunRuntimeSelfTests();
+    fflush(stdout);
+    return result;
 }
 
 int runBuiltInSelfTest() {
@@ -80,6 +92,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
 
     if (args.find(L"--selftest-builtin") != std::wstring::npos)
         return runBuiltInSelfTest();
+    if (args.find(L"--selftest-runtime") != std::wstring::npos) {
+        const int result = runRuntimeSelfTest();
+        builtin::Shutdown();
+        return result;
+    }
     if (args.find(L"--selftest") != std::wstring::npos) {
         const int result = runSelfTest(args.find(L"--selftest-translate") != std::wstring::npos);
         builtin::Shutdown();

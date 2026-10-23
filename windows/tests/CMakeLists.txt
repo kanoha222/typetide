@@ -124,6 +124,7 @@ add_executable(TranslationExecutionSelfTest
     TranslationExecutionClassifierTests.cpp
     TranslationExecutionEndpointTests.cpp
     TranslationExecutionCacheTests.cpp
+    TranslationExecutionRuntimeTests.cpp
     TranslationExecutionSelfTest.cpp
 )
 

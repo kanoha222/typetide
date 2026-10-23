@@ -140,4 +140,20 @@ PreparedRequest Preview(const ExecutionContext& context, const std::wstring& tex
 PreparedRequest Prepare(const ExecutionContext& context, const std::wstring& text,
                         std::optional<Language> targetOverride = std::nullopt);
 
+// ---------- runtime-facing helpers ----------
+
+/// Freezes the profile bound to a physical entry (shortcut slot or selection) together with
+/// the action that entry dispatches. nullptr when the binding does not resolve: there is no
+/// silent fallback to another profile.
+ContextPtr FreezeBound(const ProfileConfiguration& configuration, ProfileEntry entry,
+                       ShortcutAction action, ConnectionSnapshot connection);
+
+/// Text handed to the cache, popup Replace and direct replacement. Preset output keeps the
+/// legacy trim; custom output is returned exactly (indentation, tabs, trailing newlines).
+/// nullopt when the output is blank.
+std::optional<std::wstring> DeliveredOutput(const TranslationProfile& profile, const std::wstring& raw);
+
+/// Fixed user-facing text for a failed Prepare. It never echoes URLs, keys or prompt text.
+std::wstring PrepareErrorMessage(PrepareStatus status, TranslationBackend backend);
+
 } // namespace execution

@@ -7,11 +7,14 @@
 //
 #pragma once
 #include "Language.h"
+#include "TranslationExecution.h"
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
+
+struct SettingsSnapshot;
 
 struct TranslationRequest {
     std::wstring text;
@@ -47,6 +50,25 @@ void CancelAll();
 
 /// 阻塞式完整翻译（改写直接替换用）。失败返回 nullopt 并填 error。
 std::optional<std::wstring> TranslateFully(const TranslationRequest& req, std::wstring* error);
+
+// ---------- profile execution ----------
+
+/// Connection values of a committed settings snapshot (the key stays in memory).
+execution::ConnectionSnapshot ConnectionFrom(const SettingsSnapshot& snapshot);
+
+/// Main thread only: freezes the committed profile bound to `entry` with `action`.
+/// nullptr when the entry has no resolvable binding.
+execution::ContextPtr FreezeEntry(ProfileEntry entry, ShortcutAction action);
+
+/// Prepares the frozen context on the calling (main) thread and streams on a worker. Prepare
+/// failures and cache hits call back synchronously before this returns. Deltas are the raw
+/// provider stream; the cache stores execution::DeliveredOutput.
+uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
+                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone);
+
+/// Blocking variant returning execution::DeliveredOutput; nullopt + error on failure.
+std::optional<std::wstring> TranslateFully(const execution::ContextPtr& context, const std::wstring& text,
+                                           std::wstring* error);
 
 /// Async backend health check using fixed synthetic text. Invoke on the main thread so
 /// backend settings are snapshotted safely; completion runs on a worker thread.

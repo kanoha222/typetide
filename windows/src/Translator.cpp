@@ -508,6 +508,29 @@ void CheckHealthAsync(std::function<void(HealthCheckResult)> completion) {
         });
 }
 
+// RED scaffold: profile execution entry points report not-ready until the runtime
+// self-test has been observed failing on CI.
+execution::ConnectionSnapshot ConnectionFrom(const SettingsSnapshot& /*snapshot*/) {
+    return {};
+}
+
+execution::ContextPtr FreezeEntry(ProfileEntry /*entry*/, ShortcutAction /*action*/) {
+    return nullptr;
+}
+
+uint64_t Stream(const execution::ContextPtr& /*context*/, const std::wstring& /*text*/,
+                std::optional<Language> /*targetOverride*/, DeltaFn /*onDelta*/, DoneFn onDone) {
+    const uint64_t id = g_nextId.fetch_add(1);
+    onDone(id, false, L"Profile execution is not implemented yet");
+    return id;
+}
+
+std::optional<std::wstring> TranslateFully(const execution::ContextPtr& /*context*/,
+                                           const std::wstring& /*text*/, std::wstring* error) {
+    if (error) *error = L"Profile execution is not implemented yet";
+    return std::nullopt;
+}
+
 void ClearCacheForTesting() {
     Cache::shared().clear();
 }

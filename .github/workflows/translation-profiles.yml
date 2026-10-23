@@ -9,6 +9,7 @@ on:
       - windows/CMakeLists.txt
       - windows/src/**
       - windows/tests/**
+      - windows/scripts/mock-openai.ps1
 
 permissions:
   contents: read
@@ -236,5 +237,84 @@ jobs:
         with:
           name: translation-execution-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.TRANSLATION_EXECUTION_LOG_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  translation-runtime:
+    name: Translation runtime mock self-test
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-runtime-build'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-runtime-logs'
+          $dataDir = Join-Path $env:RUNNER_TEMP 'typetide-runtime-data'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "RUNTIME_BUILD_DIR=$buildDir"
+            "RUNTIME_LOG_DIR=$logDir"
+            "RUNTIME_DATA_DIR=$dataDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure TypeTide
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNTIME_LOG_DIR", "$env:RUNTIME_DATA_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows -B "$env:RUNTIME_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:RUNTIME_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build TypeTide
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:RUNTIME_BUILD_DIR" --config Release --target TypeTide --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:RUNTIME_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Run runtime self-test against the loopback mock (failures are not masked)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $port = 8199
+          $record = Join-Path $env:RUNTIME_LOG_DIR 'mock-requests.jsonl'
+          $mock = Start-Process -FilePath pwsh -PassThru -NoNewWindow `
+              -ArgumentList '-NoProfile', '-File', 'windows/scripts/mock-openai.ps1', '-Port', "$port", '-RecordFile', $record `
+              -RedirectStandardOutput (Join-Path $env:RUNTIME_LOG_DIR 'mock.log') `
+              -RedirectStandardError (Join-Path $env:RUNTIME_LOG_DIR 'mock-error.log')
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 60 -and -not $ready; $i++) {
+              $client = [System.Net.Sockets.TcpClient]::new()
+              try { $ready = $client.ConnectAsync('127.0.0.1', $port).Wait(500) -and $client.Connected } catch {}
+              finally { $client.Dispose() }
+              if (-not $ready) { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $ready) { Write-Output 'mock provider did not start'; exit 2 }
+            $env:TYPETIDE_DATA_DIR = $env:RUNTIME_DATA_DIR
+            $env:TYPETIDE_MOCK_PORT = "$port"
+            $env:TYPETIDE_MOCK_RECORD = $record
+            $log = Join-Path $env:RUNTIME_LOG_DIR 'self-test.log'
+            $p = Start-Process -FilePath "$env:RUNTIME_BUILD_DIR/Release/TypeTide.exe" `
+                -ArgumentList '--selftest-runtime' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $log
+            Get-Content -LiteralPath $log
+            exit $p.ExitCode
+          } finally {
+            Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Preserve configure, build, mock and test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: translation-runtime-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.RUNTIME_LOG_DIR }}/*
           if-no-files-found: warn
           retention-days: 7
