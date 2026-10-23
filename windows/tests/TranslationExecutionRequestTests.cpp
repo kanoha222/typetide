@@ -220,7 +220,8 @@ void TestTemplateAndCapabilityGates() {
     const TranslationProfile builtInCustom = CustomProfile(TranslationBackend::BuiltIn, kCustomTemplate);
     TranslationProfile builtInFormal = MakeProfile(TranslationBackend::BuiltIn);
     builtInFormal.presetStyle = RewriteStyle::Formal;
-    for (const TranslationProfile* p : {&builtInCustom, &builtInFormal}) {
+    const TranslationProfile* const unsupported[] = {&builtInCustom, &builtInFormal};
+    for (const TranslationProfile* p : unsupported) {
         Check(RunPreview(*p, ShortcutAction::SmartPopup, MakeConnection(), kEnglishText).status ==
                   PrepareStatus::CapabilityRejected, "BuiltIn Preview rejects unsupported prompt/style");
         Check(RunPrepare(*p, ShortcutAction::SmartPopup, MakeConnection(), kEnglishText).status ==
