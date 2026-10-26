@@ -4,11 +4,15 @@
 #include "Settings.h"
 #include "Util.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cwchar>
 #include <cwctype>
 #include <limits>
+#include <initializer_list>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace ollamamodels {
 
@@ -66,24 +70,32 @@ void FetchInstalledAsync(HWND notify, UINT message) {
 }
 
 void PreloadAsync() {
-    const Settings& s = Settings::shared();
-    if (s.backend != TranslationBackend::Ollama || s.ollamaModel.empty()) return;
-    const std::string host = s.ollamaHost;
-    const int port = s.ollamaPort;
-    const std::string model = s.ollamaModel;
+    // Only models that committed profiles actually bind, each once; never the whole library.
+    const SettingsSnapshot snapshot = Settings::shared().snapshot();
+    std::vector<std::string> models;
+    for (ProfileEntry entry : {ProfileEntry::Shortcut1, ProfileEntry::Shortcut2, ProfileEntry::Selection}) {
+        const TranslationProfile* profile = profiles::BoundProfile(snapshot.profileConfig, entry);
+        if (!profile || profile->backend != TranslationBackend::Ollama || profile->model.empty()) continue;
+        if (std::find(models.begin(), models.end(), profile->model) == models.end())
+            models.push_back(profile->model);
+    }
+    if (models.empty()) return;
+    const std::wstring url =
+        util::Widen(snapshot.ollamaHost) + L":" + std::to_wstring(snapshot.ollamaPort) + L"/api/generate";
 
-    std::thread([host, port, model] {
-        json::Object body;
-        body["model"] = model;
-        body["prompt"] = "";
-        body["stream"] = false;
-        body["keep_alive"] = "10m";
-        body["think"] = false;
-        std::atomic<bool> cancel{false};
-        const std::wstring url = util::Widen(host) + L":" + std::to_wstring(port) + L"/api/generate";
-        http::Result r = http::PostStream(url, json::Value(std::move(body)).dump(), L"",
-                                          [](const char*, size_t) {}, cancel);
-        if (!r.ok) util::Log("ollama preload failed: %s", r.error.c_str());
+    std::thread([url, models] {
+        for (const std::string& model : models) {
+            json::Object body;
+            body["model"] = model;
+            body["prompt"] = "";
+            body["stream"] = false;
+            body["keep_alive"] = "10m";
+            body["think"] = false;
+            std::atomic<bool> cancel{false};
+            http::Result r = http::PostStream(url, json::Value(std::move(body)).dump(), L"",
+                                              [](const char*, size_t) {}, cancel);
+            if (!r.ok) util::Log("ollama preload failed: %s", r.error.c_str());
+        }
     }).detach();
 }
 

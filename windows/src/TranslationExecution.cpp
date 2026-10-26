@@ -310,20 +310,45 @@ PreparedRequest Prepare(const ExecutionContext& context, const std::wstring& tex
     return request;
 }
 
-// RED scaffold: runtime-facing helpers return their not-ready values until the
-// runtime contract tests have been observed failing on CI.
-ContextPtr FreezeBound(const ProfileConfiguration& /*configuration*/, ProfileEntry /*entry*/,
-                       ShortcutAction /*action*/, ConnectionSnapshot /*connection*/) {
-    return nullptr;
+ContextPtr FreezeBound(const ProfileConfiguration& configuration, ProfileEntry entry,
+                       ShortcutAction action, ConnectionSnapshot connection) {
+    const TranslationProfile* profile = profiles::BoundProfile(configuration, entry);
+    if (!profile) return nullptr;
+    return Freeze(*profile, action, std::move(connection));
 }
 
-std::optional<std::wstring> DeliveredOutput(const TranslationProfile& /*profile*/,
-                                            const std::wstring& /*raw*/) {
-    return std::nullopt;
+// Trim only decides "blank"; a custom prompt owns its output formatting exactly.
+std::optional<std::wstring> DeliveredOutput(const TranslationProfile& profile, const std::wstring& raw) {
+    std::wstring trimmed = util::Trim(raw);
+    if (trimmed.empty()) return std::nullopt;
+    return profile.promptMode == PromptMode::Custom ? raw : trimmed;
 }
 
-std::wstring PrepareErrorMessage(PrepareStatus /*status*/, TranslationBackend /*backend*/) {
-    return {};
+std::wstring PrepareErrorMessage(PrepareStatus status, TranslationBackend backend) {
+    const bool ollama = backend == TranslationBackend::Ollama;
+    switch (status) {
+    case PrepareStatus::Ok:
+        return {};
+    case PrepareStatus::CapabilityRejected:
+        return L"Built-in translation supports the Faithful preset only. Choose Ollama or API for "
+               L"custom prompts or other styles.";
+    case PrepareStatus::TemplateInvalid:
+        return L"The custom prompt is empty.";
+    case PrepareStatus::EndpointMissing:
+        return ollama ? L"Missing Ollama host" : L"Missing cloud API base URL";
+    case PrepareStatus::ModelMissing:
+        return ollama ? L"Missing Ollama model name for this profile" : L"Missing cloud model name for this profile";
+    case PrepareStatus::EndpointInvalid:
+        return ollama ? L"Invalid Ollama host. Use http(s)://host only and set the port separately."
+                      : L"Invalid cloud API base URL. Remove any credentials, query or fragment.";
+    case PrepareStatus::EndpointInsecure:
+        return L"Refusing plain HTTP to a remote API endpoint. Use HTTPS or a local endpoint.";
+    case PrepareStatus::KeyMissing:
+        return L"Missing cloud API key";
+    case PrepareStatus::NotReady:
+        break;
+    }
+    return L"Translation could not be prepared.";
 }
 
 } // namespace execution

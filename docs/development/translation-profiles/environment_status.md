@@ -1,6 +1,6 @@
 # 翻译配置：环境与进度状态
 
-状态日期：2026-10-23。**原生事务行为 RED 已在 commit `9c7b0e306ea87252eb7b4ed49a0f760d5f579369` 实证（run `39406689216` / job `118574219317`，21 failure(s)，job exit 1，无 infra exit 2），其实现已在 commit `60f0e4e` 实证 GREEN：run `39576810968` 的 [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success，且同一 commit 全部 6 个 check-run success（Core `119144243672`、Guard `119144243628`、Windows `119144243368`、Mac `119144243054`、Brand `119144243309`）。下一阶段 `translation-execution` 已在 commit `a117a72` 实证行为 RED（run `39910106404` / [job `120270873137`](https://github.com/kanoha222/typetide/actions/runs/39910106404/job/120270873137)，configure/build 成功，314 failure(s)，exit 1），其纯函数实现已在 commit `f819c2b` 实证 GREEN（run `39911587455` / [job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)：0 failure(s)；同一 commit 全部 7 个 check-run success）。运行时集成：测试脚手架已提交（新 job `translation-runtime` 用真实 Translator + WinHTTP 对本机 mock），行为 RED 尚未被观察到。** [文档索引](README.md) · [待办清单](task_list.md)
+状态日期：2026-10-23。**原生事务行为 RED 已在 commit `9c7b0e306ea87252eb7b4ed49a0f760d5f579369` 实证（run `39406689216` / job `118574219317`，21 failure(s)，job exit 1，无 infra exit 2），其实现已在 commit `60f0e4e` 实证 GREEN：run `39576810968` 的 [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success，且同一 commit 全部 6 个 check-run success（Core `119144243672`、Guard `119144243628`、Windows `119144243368`、Mac `119144243054`、Brand `119144243309`）。下一阶段 `translation-execution` 已在 commit `a117a72` 实证行为 RED（run `39910106404` / [job `120270873137`](https://github.com/kanoha222/typetide/actions/runs/39910106404/job/120270873137)，configure/build 成功，314 failure(s)，exit 1），其纯函数实现已在 commit `f819c2b` 实证 GREEN（run `39911587455` / [job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)：0 failure(s)；同一 commit 全部 7 个 check-run success）。运行时集成已在 commit `43093f7` 实证行为 RED（run `39931004232`：纯函数 job `120338977896` 38 failure(s)，运行时 mock job `120338978040` 17 failure(s)，均 build 成功、exit 1）；实现已提交，云端 GREEN 尚未被观察到。** [文档索引](README.md) · [待办清单](task_list.md)
 
 ## 当前证据
 
@@ -34,6 +34,16 @@
 - 覆盖：preset OpenAI/Ollama 金样、自定义 OpenAI messages 与 Ollama `system`+`prompt` 分离、`think:false` 与 400 重试体、语言/动作方向与 retarget、模板 token（区分大小写、单遍、未知保持字面）、BuiltIn 能力拒绝、authority 矩阵、OpenAI 仅三种 loopback 主机允许 HTTP、Ollama 显式端口冲突拒绝、缓存身份隔离（含 epoch、改名不失效、密钥不入身份）。全部使用合成密钥与合成选中文字，无真实 API 调用。
 - 状态：首次推送 `b2327d1` 因一处测试循环的 MSVC C3535 编译失败；仅修该测试后，commit `a117a72` 云端实证行为 RED（configure/build 成功、314 个断言失败、exit 1、无崩溃或 infra 失败）。commit `f819c2b` 实现上述 helper 并实证 GREEN（[job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)，0 failure(s)，全部 7 个 check-run success）。这只证明纯函数契约；Translator/Http.cpp/UI 尚未接入，未本地构建/运行，未测覆盖率。已知差异（待后续统一）：保存时 `profiles::Validate` 的未知变量警告对 `{{}}` 等形状比渲染器更宽。
 
+## 运行时集成（commit `43093f7` 行为 RED 已实证，GREEN 待验证）
+
+- 触发：快捷键物理槽位 1/2 与划词入口在主线程用 `translator::FreezeEntry` 冻结**已提交**快照中绑定的 profile 与连接（不读 draft）；槽位配置的动作决定方向与弹窗/替换。取词（含剪贴板兜底）、重试与改目标语言都沿用同一冻结 context；之后保存的设置只影响下一次触发。绑定无法解析时显示固定错误，不回退到其他 profile。
+- `Translator`：主线程 `execution::Prepare` 决定 URL/请求体/缓存身份，失败给出固定文案（不含 URL/密钥/提示词）；工作线程只发送冻结的请求，Ollama 400 时发送预先构造的 retry body。缓存键为 `cacheIdentity`，缓存与交付使用 `execution::DeliveredOutput`：custom 原样（缩进/制表符/结尾换行），preset 保留旧的去首尾空白。旧的按全局字段拼请求的 `Stream/TranslateFully(TranslationRequest)` 已删除；`SystemPrompt/PlainPrompt` 转发到唯一的 preset 实现。
+- `Http.cpp`：改用共享 `CrackUrl`（去掉 256/2048 固定缓冲，保留 query），provider POST 设置 `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`，3xx 作为错误报告而不跟随。`Get`（更新检查、Ollama 模型列表）保持跟随重定向。
+- App：新的用户翻译使上一次失效（取消其流，丢弃尚未粘贴的直接替换结果）；直接替换与弹窗会话分开跟踪，关闭旧弹窗不会取消新的直接替换。Ollama 预加载只预热已提交 profile 实际绑定的模型（去重）。完整的弹窗关闭原因与 TextReplacer 最终边界守卫属于 Phase 3，尚未实现。
+- 连接测试（设置窗口 Backend 页）仍按该页正在编辑的 backend/model/连接用固定合成句测试，不使用 profile 或选中文字。
+- **过渡期（用户选择）**：旧设置窗口的 backend/model/语言/方向/风格控件已不影响翻译，连接字段（Ollama host/port、API base URL/key）仍有效；profile 编辑器（Phase 4）完成前需编辑 settings.json 修改 profile 与绑定。
+- 验证：`TypeTide.exe --selftest-runtime`（job `translation-runtime`）用真实 Translator + WinHTTP 对本机 mock（`windows/scripts/mock-openai.ps1`，只记录请求路径/请求体/是否带 Authorization，不记录其值）检查线上请求体与 Prepare 一致、custom 原样输出、think 重试、缓存与 epoch 隔离、拒绝重定向、拒绝远程明文 HTTP、超过 2048 字符的 URL 及已提交设置到快捷键的路径。
+
 ## 验证入口与剩余门槛
 
 - [工作流](../../../.github/workflows/translation-profiles.yml) 分别运行 `ProfileCoreSelfTest`、`NativeStorageSelfTest`、`NativeTransactionSelfTest` 与新增的 `TranslationExecutionSelfTest`，保留真实失败退出码与日志构件。
@@ -43,8 +53,8 @@
 
 ## 集成门槛（待办，非已完成功能）
 
-- 公开 `Settings` 字段仍是旧版可编辑 draft，生产 `Translator` 在下一次集成前仍读取它们；本批不宣称完整运行时激活。保存失败时可能保留未提交 draft，与旧行为一致。
-- 功能验收前，UI 必须使用 candidate commit 并在提交后重新同步控件、处理 error + warning / 只读状态；`Translator` 必须冻结 committed snapshot。
+- 公开 `Settings` 字段仍是旧版可编辑 draft。翻译执行已改为冻结 committed snapshot（不再读 draft）；仅设置窗口的连接测试仍有意读取正在编辑的值。保存失败时可能保留未提交 draft，与旧行为一致。
+- 功能验收前，UI 必须使用 candidate commit 并在提交后重新同步控件、处理 error + warning / 只读状态。
 - `.tmp` 的 `CREATE_NEW` 冲突保护未知文件，但需要明确的恢复 UX，不能静默删除非自有临时文件。
 - `TYPETIDE_DATA_DIR` 下的进程内存凭据仅用于测试，不是持久化的生产路径。
 - 以上均为后续任务；历史 RED 21 failure(s) 与运行时 GREEN 待验证状态不变。

@@ -15,6 +15,7 @@
 #include <psapi.h>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace {
@@ -22,6 +23,7 @@ constexpr int kReadHotkeyId = 1;
 constexpr int kRewriteHotkeyId = 2;
 // 超过这个长度不翻译：LLM 又慢又贵，弹窗也展示不下
 constexpr size_t kMaxInputChars = 5000;
+constexpr wchar_t kNoProfileError[] = L"No translation profile is bound to this action.";
 } // namespace
 
 App& App::shared() {
@@ -144,10 +146,12 @@ void App::setupSelectionTrigger() {
         if (!st.enabled || foregroundAppSkipped()) return;
         if (st.selectionTrigger == SelectionTrigger::Icon) {
             capture::Capture copy = cap;
-            SelectionIcon::shared().show(cap.anchor, cap.hasAnchor, mouse,
-                                         [this, copy] { presentRead(copy); });
+            // 点击图标才算触发：此刻冻结划词入口绑定的 profile
+            SelectionIcon::shared().show(cap.anchor, cap.hasAnchor, mouse, [this, copy] {
+                presentRead(copy, translator::FreezeEntry(ProfileEntry::Selection, ShortcutAction::SmartPopup));
+            });
         } else if (st.selectionTrigger == SelectionTrigger::Auto) {
-            presentRead(cap);
+            presentRead(cap, translator::FreezeEntry(ProfileEntry::Selection, ShortcutAction::SmartPopup));
         }
     };
     SelectionMonitor::shared().start();
@@ -166,14 +170,6 @@ void App::quit() {
     // 直接结束进程：分离的工作线程（流式翻译/替换）不再有机会
     // 在静态对象析构后继续跑（那是退出崩溃的经典来源）。
     ExitProcess(0);
-}
-
-// ---------- 方向决策（与 macOS resolveDirection 一致）----------
-
-App::Direction App::resolveDirection(const std::wstring& text, TranslationDirection mode, bool isWrite) const {
-    const Settings& s = Settings::shared();
-    auto route = lang::ResolveDirection(text, mode, isWrite, s.nativeLanguage, s.foreignLanguage);
-    return {route.source, route.target};
 }
 
 // ---------- 跳过列表 ----------
@@ -212,22 +208,16 @@ bool App::foregroundAppSkipped() const {
     return false;
 }
 
-// ---------- 读·划词翻译 ----------
+// ---------- 触发：快捷键槽位 / 划词 → 绑定的 profile ----------
 
-void App::performShortcutAction(ShortcutAction action) {
-    const Settings& s = Settings::shared();
-    switch (action) {
-    case ShortcutAction::NativePopup: handleRead(s.nativeLanguage); break;
-    case ShortcutAction::ForeignPopup: handleRead(s.foreignLanguage); break;
-    case ShortcutAction::NativeReplace: handleRewrite(s.nativeLanguage); break;
-    case ShortcutAction::ForeignReplace: handleRewrite(s.foreignLanguage); break;
-    case ShortcutAction::SmartReplace: handleRewrite(); break;
-    case ShortcutAction::SmartPopup:
-    default: handleRead(); break;
-    }
+void App::performEntry(ProfileEntry entry, ShortcutAction action) {
+    // 取词之前冻结：取词期间保存的设置只影响之后的触发。动作决定弹窗还是替换。
+    execution::ContextPtr context = translator::FreezeEntry(entry, action);
+    if (IsReplaceAction(action)) handleRewrite(std::move(context));
+    else handleRead(std::move(context));
 }
 
-void App::handleRead(std::optional<Language> targetOverride) {
+void App::handleRead(execution::ContextPtr context) {
     const Settings& s = Settings::shared();
     util::Log("handleRead enabled=%d", s.enabled);
     if (!s.enabled || foregroundAppSkipped()) return;
@@ -237,79 +227,114 @@ void App::handleRead(std::optional<Language> targetOverride) {
     if (auto cap = capture::UIAReadSelection()) {
         diagnostics::Record("selectionCapture", "success", {}, "uia", {}, -1, -1,
                             (int)cap->text.size());
-        presentRead(*cap, targetOverride);
+        presentRead(*cap, std::move(context));
         return;
     }
+    captureFallbackAsync(WM_APP_READ_CAPTURED, std::move(context));
+}
+
+void App::handleRewrite(execution::ContextPtr context) {
+    const Settings& s = Settings::shared();
+    if (!s.enabled || foregroundAppSkipped()) return;
+
+    // 与 handleRead 同理：UIA 主线程快路径，剪贴板兜底进工作线程
+    if (auto cap = capture::UIACaptureForRewrite()) {
+        diagnostics::Record("selectionCapture", "success", {}, "uia", {}, -1, -1,
+                            (int)cap->text.size());
+        proceedRewrite(*cap, std::move(context));
+        return;
+    }
+    captureFallbackAsync(WM_APP_REWRITE_CAPTURED, std::move(context));
+}
+
+void App::captureFallbackAsync(UINT message, execution::ContextPtr context) {
     HWND hwnd = hwnd_;
-    std::thread([hwnd, targetOverride] {
+    std::thread([hwnd, message, context = std::move(context)] {
         auto copied = capture::ClipboardFallbackCopy();
-        capture::Capture* cap = nullptr;
-        if (copied) {
-            diagnostics::Record("selectionCapture", "success", {}, "clipboardFallback", {}, -1, -1,
-                                (int)copied->size());
-            cap = new capture::Capture;
-            cap->text = *copied;
-            cap->anchor = capture::CursorAnchor();
-            cap->hasAnchor = true;
+        if (!copied) {
+            diagnostics::Record("selectionCapture", "failure");
+            return;
         }
-        else diagnostics::Record("selectionCapture", "failure");
-        if (!PostMessageW(hwnd, WM_APP_READ_CAPTURED,
-                          targetOverride ? (WPARAM)((int)*targetOverride + 1) : 0, (LPARAM)cap)) delete cap;
+        diagnostics::Record("selectionCapture", "success", {}, "clipboardFallback", {}, -1, -1,
+                            (int)copied->size());
+        auto* captured = new CapturedSelection;
+        captured->cap.text = *copied;
+        captured->cap.anchor = capture::CursorAnchor();
+        captured->cap.hasAnchor = true;
+        captured->context = context;
+        if (!PostMessageW(hwnd, message, 0, (LPARAM)captured)) delete captured;
     }).detach();
 }
 
-bool App::rejectIfTooLong(const capture::Capture& cap) {
+bool App::rejectIfTooLong(const capture::Capture& cap, const execution::ContextPtr& context) {
     if (cap.text.size() <= kMaxInputChars) return false;
     RECT anchor = cap.hasAnchor ? cap.anchor : capture::CursorAnchor();
     wchar_t msg[128];
     swprintf_s(msg, L"Selection is too long (%zu characters, max %zu)",
                cap.text.size(), kMaxInputChars);
-    showErrorPopup(cap.text.substr(0, 80), Settings::shared().nativeLanguage, anchor, msg);
+    showErrorPopup(cap.text.substr(0, 80), context ? context->profile.nativeLanguage : Language::English,
+                   anchor, msg);
     return true;
 }
 
-void App::presentRead(const capture::Capture& cap, std::optional<Language> targetOverride) {
-    if (rejectIfTooLong(cap)) return;
-    const Settings& s = Settings::shared();
-    RECT anchor = cap.hasAnchor ? cap.anchor : capture::CursorAnchor();
-    Direction dir = targetOverride ? Direction{lang::Detect(cap.text), *targetOverride}
-                                   : resolveDirection(cap.text, s.readDirection, false);
+void App::beginUserTranslation() {
+    ++generation_;
+    translator::Cancel(currentReq_);
+    translator::Cancel(rewriteReq_);
+}
 
-    currentSource_ = dir.from;
-    currentText_ = cap.text;
-    currentStyle_ = s.readStyle;
-    currentReplaceSelectAll_ = false;
+// ---------- 读·弹窗会话（含改写预览）----------
+
+void App::presentRead(const capture::Capture& cap, execution::ContextPtr context) {
+    if (rejectIfTooLong(cap, context)) return;
+    openPopupSession(cap, std::move(context), /*replaceSelectAll=*/false);
+}
+
+void App::openPopupSession(const capture::Capture& cap, execution::ContextPtr context, bool replaceSelectAll) {
+    RECT anchor = cap.hasAnchor ? cap.anchor : capture::CursorAnchor();
+    if (!context) {
+        showErrorPopup(cap.text, Language::English, anchor, kNoProfileError);
+        return;
+    }
+    beginUserTranslation();
+    const Language target =
+        execution::ResolveActionDirection(context->profile, context->action, cap.text).target;
+    sessionContext_ = std::move(context);
+    sessionText_ = cap.text;
+    currentReplaceSelectAll_ = replaceSelectAll;
 
     PopupWindow& popup = PopupWindow::shared();
-    popup.show(cap.text, dir.to, anchor, /*showReplace=*/true);
+    popup.show(cap.text, target, anchor, /*showReplace=*/true);
     popup.onReplace = [this] {
-        std::wstring t = PopupWindow::shared().translation();
-        if (util::Trim(t).empty()) return;
+        // custom 原样交付（缩进/制表符/结尾换行），preset 去首尾空白；空结果不替换
+        std::optional<std::wstring> text =
+            execution::DeliveredOutput(sessionContext_->profile, PopupWindow::shared().translation());
+        if (!text) return;
         bool selectAll = currentReplaceSelectAll_;
         PopupWindow::shared().close();
-        replacer::ReplaceAsync(std::move(t), selectAll);
+        replacer::ReplaceAsync(std::move(*text), selectAll);
     };
     popup.onRetarget = [this](Language newTarget) {
         translator::Cancel(currentReq_);
         PopupWindow& p = PopupWindow::shared();
         p.setTarget(newTarget);
         p.resetForRetranslate();
-        startStream(currentText_, currentSource_, newTarget, currentStyle_);
+        startStream(newTarget);  // 同一冻结 profile，只换目标语言
     };
     popup.onRetry = [this] {
         PopupWindow& p = PopupWindow::shared();
         p.resetForRetranslate();
-        startStream(currentText_, currentSource_, p.target(), currentStyle_);
+        startStream(p.target());
     };
     popup.onClosed = [this] { translator::Cancel(currentReq_); };
 
-    startStream(cap.text, dir.from, dir.to, s.readStyle);
+    startStream(std::nullopt);
 }
 
-void App::startStream(const std::wstring& text, std::optional<Language> from, Language to, RewriteStyle style) {
+void App::startStream(std::optional<Language> targetOverride) {
     HWND hwnd = hwnd_;
     currentReq_ = translator::Stream(
-        {text, from, to, style},
+        sessionContext_, sessionText_, targetOverride,
         [hwnd](uint64_t id, const std::wstring& delta) {
             auto* payload = new std::wstring(delta);
             if (!PostMessageW(hwnd, WM_APP_TR_DELTA, (WPARAM)id, (LPARAM)payload))
@@ -324,109 +349,59 @@ void App::startStream(const std::wstring& text, std::optional<Language> from, La
 
 // ---------- 写·输入改写 ----------
 
-void App::handleRewrite(std::optional<Language> targetOverride) {
-    const Settings& s = Settings::shared();
-    if (!s.enabled || foregroundAppSkipped()) return;
-
-    // 与 handleRead 同理：UIA 主线程快路径，剪贴板兜底进工作线程
-    if (auto cap = capture::UIACaptureForRewrite()) {
-        diagnostics::Record("selectionCapture", "success", {}, "uia", {}, -1, -1,
-                            (int)cap->text.size());
-        proceedRewrite(*cap, targetOverride);
+void App::proceedRewrite(const capture::Capture& cap, execution::ContextPtr context) {
+    if (rejectIfTooLong(cap, context)) return;
+    // 先预览：弹窗显示译文 + Replace（整框改写替换时先全选）
+    if (Settings::shared().rewritePreview) {
+        openPopupSession(cap, std::move(context), cap.isWholeField);
         return;
     }
-    HWND hwnd = hwnd_;
-    std::thread([hwnd, targetOverride] {
-        auto copied = capture::ClipboardFallbackCopy();
-        capture::Capture* cap = nullptr;
-        if (copied) {
-            diagnostics::Record("selectionCapture", "success", {}, "clipboardFallback", {}, -1, -1,
-                                (int)copied->size());
-            cap = new capture::Capture;
-            cap->text = *copied;
-            cap->anchor = capture::CursorAnchor();
-            cap->hasAnchor = true;
-        }
-        else diagnostics::Record("selectionCapture", "failure");
-        if (!PostMessageW(hwnd, WM_APP_REWRITE_CAPTURED,
-                          targetOverride ? (WPARAM)((int)*targetOverride + 1) : 0, (LPARAM)cap)) delete cap;
-    }).detach();
+    replaceDirectly(cap, std::move(context));
 }
 
-void App::proceedRewrite(const capture::Capture& capIn, std::optional<Language> targetOverride) {
-    if (rejectIfTooLong(capIn)) return;
-    const Settings& s = Settings::shared();
-    const capture::Capture* cap = &capIn;
-
-    Direction dir = targetOverride ? Direction{lang::Detect(cap->text), *targetOverride}
-                                   : resolveDirection(cap->text, s.rewriteDirection, true);
-
-    if (s.rewritePreview) {
-        // 先预览：弹窗显示译文 + Replace（整框改写替换时先全选）
-        RECT anchor = cap->hasAnchor ? cap->anchor : capture::CursorAnchor();
-        currentSource_ = dir.from;
-        currentText_ = cap->text;
-        currentStyle_ = s.rewriteStyle;
-        currentReplaceSelectAll_ = cap->isWholeField;
-
-        PopupWindow& popup = PopupWindow::shared();
-        popup.show(cap->text, dir.to, anchor, /*showReplace=*/true);
-        popup.onReplace = [this] {
-            std::wstring t = PopupWindow::shared().translation();
-            if (util::Trim(t).empty()) return;
-            bool selectAll = currentReplaceSelectAll_;
-            PopupWindow::shared().close();
-            replacer::ReplaceAsync(std::move(t), selectAll);
-        };
-        popup.onRetarget = [this](Language newTarget) {
-            translator::Cancel(currentReq_);
-            PopupWindow& p = PopupWindow::shared();
-            p.setTarget(newTarget);
-            p.resetForRetranslate();
-            startStream(currentText_, currentSource_, newTarget, currentStyle_);
-        };
-        popup.onRetry = [this] {
-            PopupWindow& p = PopupWindow::shared();
-            p.resetForRetranslate();
-            startStream(currentText_, currentSource_, p.target(), currentStyle_);
-        };
-        popup.onClosed = [this] { translator::Cancel(currentReq_); };
-
-        startStream(cap->text, dir.from, dir.to, s.rewriteStyle);
-    } else {
-        // 直接替换：在主线程拍配置快照并启动异步流，完成后回主线程粘贴。
-        HWND hwnd = hwnd_;
-        capture::Capture c = *cap;
-        Direction d = dir;
-        RewriteStyle style = s.rewriteStyle;
-        struct RewriteStreamState {
-            std::mutex mutex;
-            std::wstring result;
-        };
-        auto state = std::make_shared<RewriteStreamState>();
-        translator::Stream(
-            {c.text, d.from, d.to, style},
-            [state](uint64_t, const std::wstring& delta) {
-                std::lock_guard lock(state->mutex);
-                state->result += delta;
-            },
-            [hwnd, state, c, d](uint64_t, bool ok, const std::wstring& error) {
-                std::lock_guard lock(state->mutex);
-                std::wstring cleaned = util::Trim(state->result);
-                const bool emptyResponse = ok && cleaned.empty();
-                auto* msg = new RewriteResult{
-                    ok && !cleaned.empty(),
-                    std::move(cleaned),
-                    emptyResponse ? L"Empty translation" : error,
-                    c.isWholeField,
-                    c.hasAnchor ? c.anchor : capture::CursorAnchor(),
-                    true,
-                    c.text,
-                    d.to,
-                };
-                if (!PostMessageW(hwnd, WM_APP_REWRITE_DONE, 0, (LPARAM)msg)) delete msg;
-            });
+void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr context) {
+    RECT anchor = cap.hasAnchor ? cap.anchor : capture::CursorAnchor();
+    if (!context) {
+        showErrorPopup(cap.text, Language::English, anchor, kNoProfileError);
+        return;
     }
+    beginUserTranslation();
+    // 直接替换：异步流结束后回主线程粘贴；期间若有新的用户翻译则丢弃本结果。
+    const Language target =
+        execution::ResolveActionDirection(context->profile, context->action, cap.text).target;
+    struct RewriteStreamState {
+        std::mutex mutex;
+        std::wstring result;
+    };
+    auto state = std::make_shared<RewriteStreamState>();
+    HWND hwnd = hwnd_;
+    const uint64_t generation = generation_;
+    const bool wholeField = cap.isWholeField;
+    const std::wstring original = cap.text;
+    rewriteReq_ = translator::Stream(
+        context, cap.text, std::nullopt,
+        [state](uint64_t, const std::wstring& delta) {
+            std::lock_guard lock(state->mutex);
+            state->result += delta;
+        },
+        [hwnd, state, context, generation, wholeField, anchor, original, target](
+            uint64_t, bool ok, const std::wstring& error) {
+            std::lock_guard lock(state->mutex);
+            std::optional<std::wstring> text =
+                ok ? execution::DeliveredOutput(context->profile, state->result) : std::nullopt;
+            auto* msg = new RewriteResult{
+                text.has_value(),
+                text ? std::move(*text) : std::wstring(),
+                text ? std::wstring() : (ok ? std::wstring(L"Empty translation") : error),
+                wholeField,
+                anchor,
+                true,
+                original,
+                target,
+                generation,
+            };
+            if (!PostMessageW(hwnd, WM_APP_REWRITE_DONE, 0, (LPARAM)msg)) delete msg;
+        });
 }
 
 void App::showErrorPopup(const std::wstring& original, Language target, RECT anchor, const std::wstring& error) {
@@ -444,8 +419,11 @@ void App::showErrorPopup(const std::wstring& original, Language target, RECT anc
 LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_HOTKEY:
-        if (wp == kReadHotkeyId) performShortcutAction(Settings::shared().readShortcutAction);
-        else if (wp == kRewriteHotkeyId) performShortcutAction(Settings::shared().rewriteShortcutAction);
+        // 物理槽位决定 profile，槽位配置的动作决定方向与弹窗/替换
+        if (wp == kReadHotkeyId)
+            performEntry(ProfileEntry::Shortcut1, Settings::shared().readShortcutAction);
+        else if (wp == kRewriteHotkeyId)
+            performEntry(ProfileEntry::Shortcut2, Settings::shared().rewriteShortcutAction);
         return 0;
 
     case WM_APP_TRAY: {
@@ -467,13 +445,14 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_APP_TR_DONE: {
         auto* done = (DoneMsg*)lp;
-        if ((uint64_t)wp == currentReq_ && PopupWindow::shared().isVisible()) {
+        PopupWindow& popup = PopupWindow::shared();
+        if ((uint64_t)wp == currentReq_ && popup.isVisible()) {
             if (!done->ok)
-                PopupWindow::shared().setError(done->error);
-            else if (util::Trim(PopupWindow::shared().translation()).empty())
-                PopupWindow::shared().setError(L"No translation returned");
+                popup.setError(done->error);
+            else if (!sessionContext_ || !execution::DeliveredOutput(sessionContext_->profile, popup.translation()))
+                popup.setError(L"No translation returned");
             else
-                PopupWindow::shared().finishTranslation();
+                popup.finishTranslation();
         }
         delete done;
         return 0;
@@ -481,10 +460,12 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_APP_REWRITE_DONE: {
         auto* r = (RewriteResult*)lp;
-        if (r->ok)
-            replacer::ReplaceAsync(std::move(r->text), r->isWholeField);
-        else
-            showErrorPopup(r->original, r->target, r->anchor, r->error);
+        if (r->generation == generation_) {
+            if (r->ok)
+                replacer::ReplaceAsync(std::move(r->text), r->isWholeField);
+            else
+                showErrorPopup(r->original, r->target, r->anchor, r->error);
+        }
         delete r;
         return 0;
     }
@@ -507,22 +488,16 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_APP_READ_CAPTURED: {
-        auto* cap = (capture::Capture*)lp;
-        if (cap) {
-            std::optional<Language> target = wp ? std::optional<Language>((Language)((int)wp - 1)) : std::nullopt;
-            presentRead(*cap, target);
-            delete cap;
-        }
+        auto* captured = (CapturedSelection*)lp;
+        presentRead(captured->cap, captured->context);
+        delete captured;
         return 0;
     }
 
     case WM_APP_REWRITE_CAPTURED: {
-        auto* cap = (capture::Capture*)lp;
-        if (cap) {
-            std::optional<Language> target = wp ? std::optional<Language>((Language)((int)wp - 1)) : std::nullopt;
-            proceedRewrite(*cap, target);
-            delete cap;
-        }
+        auto* captured = (CapturedSelection*)lp;
+        proceedRewrite(captured->cap, captured->context);
+        delete captured;
         return 0;
     }
 

@@ -1,4 +1,5 @@
 #include "Http.h"
+#include "HttpUrl.h"
 #include <windows.h>
 #include <winhttp.h>
 #include <vector>
@@ -30,19 +31,17 @@ Result request(const std::wstring& url,
                const std::string& body,
                const std::wstring& extraHeaders,
                const std::function<void(const char*, size_t)>* onChunk,
-               const std::atomic<bool>* cancel) {
+               const std::atomic<bool>* cancel,
+               bool followRedirects) {
     Result r;
 
-    URL_COMPONENTS uc{};
-    uc.dwStructSize = sizeof(uc);
-    wchar_t host[256]{}, path[2048]{};
-    uc.lpszHostName = host; uc.dwHostNameLength = 256;
-    uc.lpszUrlPath = path;  uc.dwUrlPathLength = 2048;
-    if (!WinHttpCrackUrl(url.c_str(), (DWORD)url.size(), 0, &uc)) {
+    // Same offline parse as the endpoint classifier, with no fixed host/path buffers.
+    const UrlParts parts = CrackUrl(url);
+    if (!parts.ok) {
         r.error = "Invalid URL";
         return r;
     }
-    bool secure = uc.nScheme == INTERNET_SCHEME_HTTPS;
+    const std::wstring object = (parts.path.empty() ? std::wstring(L"/") : parts.path) + parts.extra;
 
     Handle session(WinHttpOpen(L"TypeTide/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
@@ -51,13 +50,22 @@ Result request(const std::wstring& url,
     // 连接失败应尽快可恢复；单次 90 秒无响应后让 UI 提供 Retry。
     WinHttpSetTimeouts(session.h, 10000, 10000, 30000, 90000);
 
-    Handle conn(WinHttpConnect(session.h, host, uc.nPort, 0));
+    Handle conn(WinHttpConnect(session.h, parts.host.c_str(), static_cast<INTERNET_PORT>(parts.port), 0));
     if (!conn) { r.error = lastError("WinHttpConnect"); return r; }
 
-    Handle req(WinHttpOpenRequest(conn.h, method, path, nullptr,
+    Handle req(WinHttpOpenRequest(conn.h, method, object.c_str(), nullptr,
                                   WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                  secure ? WINHTTP_FLAG_SECURE : 0));
+                                  parts.secure ? WINHTTP_FLAG_SECURE : 0));
     if (!req) { r.error = lastError("WinHttpOpenRequest"); return r; }
+
+    // Provider requests carry credentials and prompts: a 3xx is reported, never followed.
+    if (!followRedirects) {
+        DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        if (!WinHttpSetOption(req.h, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy))) {
+            r.error = lastError("Redirect policy");
+            return r;
+        }
+    }
 
     std::wstring headers = L"Content-Type: application/json\r\n" + extraHeaders;
     if (!WinHttpSendRequest(req.h, headers.c_str(), (DWORD)headers.size(),
@@ -117,11 +125,11 @@ Result PostStream(const std::wstring& url, const std::string& body,
                   const std::wstring& extraHeaders,
                   const std::function<void(const char*, size_t)>& onChunk,
                   const std::atomic<bool>& cancel) {
-    return request(url, L"POST", body, extraHeaders, &onChunk, &cancel);
+    return request(url, L"POST", body, extraHeaders, &onChunk, &cancel, /*followRedirects=*/false);
 }
 
 Result Get(const std::wstring& url, const std::wstring& extraHeaders) {
-    return request(url, L"GET", {}, extraHeaders, nullptr, nullptr);
+    return request(url, L"GET", {}, extraHeaders, nullptr, nullptr, /*followRedirects=*/true);
 }
 
 } // namespace http

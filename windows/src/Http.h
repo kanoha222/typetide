@@ -17,7 +17,7 @@ struct Result {
 };
 
 /// 流式 POST：每收到一块 body 调一次 onChunk（UTF-8 原始字节）。
-/// cancel 置 true 后尽快返回。
+/// cancel 置 true 后尽快返回。Redirects are never followed (a 3xx is an error).
 Result PostStream(const std::wstring& url,
                   const std::string& body,
                   const std::wstring& extraHeaders,  // 形如 L"Authorization: Bearer x\r\n"，可空

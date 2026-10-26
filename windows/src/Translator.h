@@ -1,9 +1,9 @@
 //
-//  Translator.h — 翻译服务：提示词、Ollama / OpenAI 兼容后端（流式）、LRU 缓存。
-//  对应 macOS 的 TranslationService + providers。
+//  Translator.h — 翻译服务：执行冻结的 profile（BuiltIn / Ollama / OpenAI 兼容，流式）、LRU 缓存。
+//  对应 macOS 的 TranslationService + providers。请求内容由 execution::Prepare 决定。
 //
-//  stream() 在工作线程执行，回调也在工作线程触发；
-//  UI 侧（App）负责用 PostMessage 转回主线程。缓存命中时回调在调用线程同步触发。
+//  Stream() 在工作线程执行，回调也在工作线程触发；
+//  UI 侧（App）负责用 PostMessage 转回主线程。Prepare 失败与缓存命中时回调在调用线程同步触发。
 //
 #pragma once
 #include "Language.h"
@@ -16,6 +16,7 @@
 
 struct SettingsSnapshot;
 
+/// Input of the BuiltIn model runtime (builtin::Stream).
 struct TranslationRequest {
     std::wstring text;
     std::optional<Language> source;  // nullopt = 让模型自动判断
@@ -32,24 +33,19 @@ struct HealthCheckResult {
     int totalMs = 0;
 };
 
-/// 提示词构造（与 macOS TranslationPrompt 保持一致）
+/// Preset prompts (与 macOS TranslationPrompt 保持一致); forward to execution::PresetSystemPrompt /
+/// PresetPlainPrompt, the single source of the preset wording.
 std::string SystemPrompt(Language target, std::optional<Language> source, RewriteStyle style);
 std::string PlainPrompt(const std::wstring& text, Language target, std::optional<Language> source, RewriteStyle style);
 
 using DeltaFn = std::function<void(uint64_t reqId, const std::wstring& delta)>;
 using DoneFn = std::function<void(uint64_t reqId, bool ok, const std::wstring& error)>;
 
-/// 发起流式翻译，返回请求 id。命中缓存时同步回调全文 + 完成。
-uint64_t Stream(const TranslationRequest& req, DeltaFn onDelta, DoneFn onDone);
-
 /// 取消某个请求（对应流式任务尽快退出，不再回调）
 void Cancel(uint64_t reqId);
 
 /// 取消全部活跃请求（退出前调用）
 void CancelAll();
-
-/// 阻塞式完整翻译（改写直接替换用）。失败返回 nullopt 并填 error。
-std::optional<std::wstring> TranslateFully(const TranslationRequest& req, std::wstring* error);
 
 // ---------- profile execution ----------
 
@@ -70,8 +66,9 @@ uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
 std::optional<std::wstring> TranslateFully(const execution::ContextPtr& context, const std::wstring& text,
                                            std::wstring* error);
 
-/// Async backend health check using fixed synthetic text. Invoke on the main thread so
-/// backend settings are snapshotted safely; completion runs on a worker thread.
+/// Async connection test of the Backend tab's current backend/model/connection values, using
+/// fixed synthetic text. Invoke on the main thread so those values are snapshotted safely;
+/// completion runs on a worker thread.
 void CheckHealthAsync(std::function<void(HealthCheckResult)> completion);
 
 /// 测试钩子：清空缓存
