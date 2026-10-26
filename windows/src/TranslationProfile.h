@@ -65,6 +65,11 @@ const TranslationProfile* Find(const ProfileConfiguration& configuration,
 const TranslationProfile* BoundProfile(const ProfileConfiguration& configuration,
                                        ProfileEntry entry);
 
+// A copy of `configuration` with only `entry` bound to `profileId`. It is not validated:
+// commit it through the settings transaction, which rejects an unknown id.
+ProfileConfiguration WithBinding(ProfileConfiguration configuration, ProfileEntry entry,
+                                 const std::string& profileId);
+
 // Implemented by the Windows persistence layer using CoCreateGuid.
 std::string NewId();
 

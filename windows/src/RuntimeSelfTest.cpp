@@ -1,12 +1,20 @@
 #include "RuntimeSelfTest.h"
+#include "Clipboard.h"
 #include "Json.h"
+#include "ProfileBinding.h"
 #include "Settings.h"
+#include "TextReplacer.h"
 #include "TranslationExecution.h"
+#include "TranslationSession.h"
 #include "Translator.h"
 #include "Util.h"
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -261,6 +269,72 @@ void testCommittedBinding(const MockEnv& env) {
     settings.openAIBaseURL = Base(env);
 }
 
+void testBindingCommit() {
+    printf("[tray binding commit]\n");
+    Settings& settings = Settings::shared();
+    const execution::ContextPtr inFlight =
+        translator::FreezeEntry(ProfileEntry::Shortcut2, ShortcutAction::SmartReplace);
+    if (!check(inFlight && inFlight->profile.id != "runtime-bound", "shortcut 2 starts on another profile")) return;
+    const std::string previous = inFlight->profile.id;
+    std::string error;
+    check(profilebinding::Commit(settings, ProfileEntry::Shortcut2, "runtime-bound", &error),
+          "binding shortcut 2 to another profile commits", error);
+    const execution::ContextPtr later = translator::FreezeEntry(ProfileEntry::Shortcut2, ShortcutAction::SmartReplace);
+    check(later && later->profile.id == "runtime-bound", "later triggers use the new binding");
+    check(inFlight->profile.id == previous, "a trigger frozen before the change keeps its profile");
+    Settings reloaded;
+    reloaded.load();
+    check(reloaded.snapshot().profileConfig.bindings.shortcut2ProfileId == "runtime-bound",
+          "the new binding is saved");
+    error.clear();
+    check(!profilebinding::Commit(settings, ProfileEntry::Selection, "missing-profile", &error) && !error.empty(),
+          "a binding to an unknown profile is refused with an error");
+    check(settings.snapshot().profileConfig.bindings.selectionProfileId != "missing-profile",
+          "a refused binding changes nothing");
+}
+
+void testReplaceGuards() {
+    printf("[replacement guards]\n");
+    const std::wstring original = L"CLIPBOARD_BEFORE_REPLACE";
+    if (!check(clipboard::SetText(original), "the clipboard is writable in this session")) return;
+    session::Ledger ledger;
+    const session::PasteGuard stale = ledger.pasteGuard(ledger.beginSession().session, 0);
+    const uint64_t current = ledger.beginSession().session;
+    check(replacer::ReplaceForTesting(L"STALE_TEXT", false, stale) == replacer::ReplaceOutcome::AbortedStale,
+          "a superseded replacement is aborted before any input");
+    check(clipboard::GetText() == std::optional<std::wstring>(original), "the clipboard is unchanged after a stale abort");
+    // Any window other than the foreground one stands in for "the captured editor lost focus".
+    const std::uintptr_t foreground = reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
+    const session::PasteGuard elsewhere = ledger.pasteGuard(current, foreground + 4);
+    check(replacer::ReplaceForTesting(L"ELSEWHERE_TEXT", true, elsewhere) ==
+              replacer::ReplaceOutcome::AbortedTargetChanged,
+          "a replacement whose window is no longer in front is aborted");
+    check(clipboard::GetText() == std::optional<std::wstring>(original),
+          "the clipboard is restored after a target abort");
+}
+
+void testEpochBackfill(const MockEnv& env) {
+    printf("[credential change during a request]\n");
+    const TranslationProfile profile = Profile(TranslationBackend::OpenAI, "mock-slow", true);
+    const std::wstring text = L"The cat is in the house and it is that (backfill)";
+    const size_t before = ReadRecords(env).size();
+    auto firstDone = std::make_shared<std::promise<bool>>();
+    std::future<bool> first = firstDone->get_future();
+    translator::Stream(execution::Freeze(profile, ShortcutAction::SmartPopup, Connection(env, 21)), text,
+                       std::nullopt, [](uint64_t, const std::wstring&) {},
+                       [firstDone](uint64_t, bool ok, const std::wstring&) { firstDone->set_value(ok); });
+    // The credential/connection changes (new epoch) while the old request is still running.
+    const Outcome renewed = Run(profile, Connection(env, 22), text);
+    check(renewed.text == std::optional<std::wstring>(kExactReply), "a request after the change is answered",
+          util::Narrow(renewed.error));
+    check(first.wait_for(std::chrono::seconds(15)) == std::future_status::ready && first.get(),
+          "the request started before the change still completes");
+    check(ReadRecords(env).size() == before + 2, "the new epoch never reuses the older in-flight result");
+    const Outcome oldAgain = Run(profile, Connection(env, 21), text);
+    check(oldAgain.text == std::optional<std::wstring>(kExactReply) && ReadRecords(env).size() == before + 2,
+          "the late result was cached only under the old epoch");
+}
+
 } // namespace
 
 int RunRuntimeSelfTests() {
@@ -282,6 +356,9 @@ int RunRuntimeSelfTests() {
     testRemoteHttpRefused(env);
     testLongUrl(env);
     testCommittedBinding(env);
+    testBindingCommit();
+    testReplaceGuards();
+    testEpochBackfill(env);
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nall runtime tests passed\n", g_failures);
     return g_failures ? 1 : 0;
 }

@@ -27,6 +27,8 @@ add_executable(TypeTide WIN32
     src/HttpUrl.cpp
     src/EndpointPolicy.cpp
     src/TranslationExecution.cpp
+    src/TranslationSession.cpp
+    src/ProfileBinding.cpp
     src/Translator.cpp
     src/BuiltInModel.cpp
     src/OllamaModels.cpp

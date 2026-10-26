@@ -117,6 +117,7 @@ add_executable(TranslationExecutionSelfTest
     ../src/HttpUrl.cpp
     ../src/EndpointPolicy.cpp
     ../src/TranslationExecution.cpp
+    ../src/TranslationSession.cpp
     TranslationExecutionSupport.cpp
     TranslationExecutionPromptTests.cpp
     TranslationExecutionDirectionTests.cpp
@@ -125,6 +126,7 @@ add_executable(TranslationExecutionSelfTest
     TranslationExecutionEndpointTests.cpp
     TranslationExecutionCacheTests.cpp
     TranslationExecutionRuntimeTests.cpp
+    TranslationSessionTests.cpp
     TranslationExecutionSelfTest.cpp
 )
 

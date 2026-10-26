@@ -137,4 +137,10 @@ void ReplaceAsync(std::wstring text, bool selectAll) {
     }).detach();
 }
 
+// RED scaffold: does nothing until the replacement guard tests fail on CI.
+ReplaceOutcome ReplaceForTesting(const std::wstring& /*text*/, bool /*selectAll*/,
+                                 const session::PasteGuard& /*guard*/) {
+    return ReplaceOutcome::Pasted;
+}
+
 } // namespace replacer

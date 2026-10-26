@@ -39,6 +39,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 
 - [ ] RED: prove physical-slot binding for same/swapped actions, selection binding, disabled shortcuts, and direction independence from slot labels/preview toggles.
 - [ ] RED: use barriers for delayed capture, synchronous cache hit, retry/retarget snapshots, stale callbacks and popup close reasons, credential-change backfill, and delayed input-commit cancellation with clipboard restoration.
+  - 测试脚手架已提交（RED 尚未观察到）：纯函数 `TranslationSessionTests.cpp`（会话代次、每次尝试的 ticket、四种关闭原因、粘贴守卫与目标窗口、`profiles::WithBinding`）进入 `TranslationExecutionSelfTest`；`--selftest-runtime` 新增托盘绑定提交、替换中止后剪贴板不变、请求进行中改连接（`mock-slow`）三组。`session::Ledger`、`WithBinding`、`profilebinding::Commit` 与 `replacer::ReplaceForTesting` 目前为桩实现。
 - [ ] GREEN: integrate main-thread snapshots and captured-session callbacks through App/Popup/Tray and final TextReplacer side effects; serialize clipboard capture/replace without blocking the UI.
 - [ ] Verify three tray binding submenus, future-trigger-only profile changes, independent validation tokens, and no stale-window cancellation of a new task.
 

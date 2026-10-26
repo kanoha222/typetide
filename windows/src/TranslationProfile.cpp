@@ -378,4 +378,10 @@ const TranslationProfile* BoundProfile(const ProfileConfiguration& configuration
     return id ? Find(configuration, *id) : nullptr;
 }
 
+// RED scaffold: returns the configuration unchanged until the binding tests fail on CI.
+ProfileConfiguration WithBinding(ProfileConfiguration configuration, ProfileEntry /*entry*/,
+                                 const std::string& /*profileId*/) {
+    return configuration;
+}
+
 } // namespace profiles

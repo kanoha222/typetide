@@ -8,6 +8,7 @@
 #   mock-exact         回复带缩进、制表符与结尾换行的固定文本
 #   mock-reject-think  请求体含 think 字段时返回 HTTP 400
 #   mock-redirect      返回 307 指向 /redirected/...（客户端不应跟随）
+#   mock-slow          等 1.5 秒后回复与 mock-exact 相同的文本（请求进行中改连接的测试用）
 # -RecordFile：每个请求追加一行 JSON {path, body, auth}；auth 只记是否带了
 # Authorization 头，从不记录其值。
 param(
@@ -62,7 +63,8 @@ while ($listener.IsListening) {
         Send-Text $res 400 '{"error":"think is not supported"}'
         continue
     }
-    $text = if ($model -eq "mock-exact") { $exactReply } else { $Reply }
+    if ($model -eq "mock-slow") { Start-Sleep -Milliseconds 1500 }
+    $text = if ($model -in @("mock-exact", "mock-slow")) { $exactReply } else { $Reply }
 
     $res.StatusCode = 200
     $res.ContentType = if ($isOpenAI) { "text/event-stream" } else { "application/x-ndjson" }
