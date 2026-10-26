@@ -1,6 +1,6 @@
 # Translation profiles: task list
 
-**当前状态：commit `9c7b0e3` 的原生事务已实证行为 RED（run `39406689216` / job `118574219317`：21 failure(s)），其实现在 commit `60f0e4e` 实证 GREEN（run `39576810968` / [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success；全部 6 个 check-run success）。Phase 2 的纯函数测试（`TranslationExecutionSelfTest` 及 `translation-execution` job）已在 commit `a117a72` 实证行为 RED（314 failure(s)，exit 1），纯函数实现已在 commit `f819c2b` 实证 GREEN（[job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)，0 failure(s)，全部 7 个 check-run success）。运行时接入已在 commit `43093f7` 实证行为 RED（run `39931004232`：纯函数 38、运行时 mock 17 failure(s)，build 成功）；实现已提交，云端 GREEN 尚未观察到；覆盖率仍未验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`，auto-fix 开启，不合并、不发版。本批包含完整值 ledger/committed snapshot、v2 与 globals codec、安全 mutable/const save、凭据暂存与回滚/来源受限清理、typed read 与隔离内存后端；原断言保留，追加 14 项边界回归未独立运行 RED。Settings/UI/provider 完整集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
+**当前状态：commit `9c7b0e3` 的原生事务已实证行为 RED（run `39406689216` / job `118574219317`：21 failure(s)），其实现在 commit `60f0e4e` 实证 GREEN（run `39576810968` / [Native job `119144243876`](https://github.com/kanoha222/typetide/actions/runs/39576810968/job/119144243876) success；全部 6 个 check-run success）。Phase 2 的纯函数测试（`TranslationExecutionSelfTest` 及 `translation-execution` job）已在 commit `a117a72` 实证行为 RED（314 failure(s)，exit 1），纯函数实现已在 commit `f819c2b` 实证 GREEN（[job `120275597655`](https://github.com/kanoha222/typetide/actions/runs/39911587455/job/120275597655)，0 failure(s)，全部 7 个 check-run success）。运行时接入已在 commit `43093f7` 实证行为 RED（run `39931004232`：纯函数 38、运行时 mock 17 failure(s)，build 成功），实现在 commit `54f0e9a` [实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/40273382829/job/121410872452)（纯函数 0 failure(s)、运行时 mock 全部通过、8 个 check-run success）；覆盖率仍未验证。** 基础设施 PR #1 已合并；当前 [draft PR #2](https://github.com/kanoha222/typetide/pull/2) 位于 `feat/translation-profiles-implementation`，auto-fix 开启，不合并、不发版。本批包含完整值 ledger/committed snapshot、v2 与 globals codec、安全 mutable/const save、凭据暂存与回滚/来源受限清理、typed read 与隔离内存后端；原断言保留，追加 14 项边界回归未独立运行 RED。Settings/UI/provider 完整集成与实测覆盖率仍未验证，Phase 1–5 整项任务待办。详见[环境状态](environment_status.md)；文档地图见[索引](README.md)。
 
 ## Phase 0 — documentation gate
 
@@ -60,7 +60,7 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 
 ## Integration gate — 待办，非已完成功能
 
-- [ ] 公开 `Settings` 字段目前仍是旧版可编辑 draft；翻译执行已改读 committed snapshot（GREEN 待验证），旧设置窗口的 backend/model/语言/方向/风格控件在 profile 编辑器完成前不影响翻译（连接字段仍有效）。保存失败时旧版行为不变，未提交的 draft 可能继续保留。
-- [ ] 功能验收前，UI 必须使用 candidate commit，并在提交后重新同步控件、处理 error + warning / 只读状态。（`Translator` 冻结 committed snapshot 已实现，云端 GREEN 待验证。）
+- [ ] 公开 `Settings` 字段目前仍是旧版可编辑 draft；翻译执行已改读 committed snapshot（GREEN `54f0e9a`），旧设置窗口的 backend/model/语言/方向/风格控件在 profile 编辑器完成前不影响翻译（连接字段仍有效）。保存失败时旧版行为不变，未提交的 draft 可能继续保留。
+- [ ] 功能验收前，UI 必须使用 candidate commit，并在提交后重新同步控件、处理 error + warning / 只读状态。（`Translator` 冻结 committed snapshot 已实现并在 `54f0e9a` 实证 GREEN。）
 - [ ] `.tmp` 的 `CREATE_NEW` 冲突会保护未知文件，但需要明确的恢复 UX，而不是静默删除非自有临时文件。
 - [ ] `TYPETIDE_DATA_DIR` 下的进程内存凭据仅用于测试，不是持久化的生产路径。

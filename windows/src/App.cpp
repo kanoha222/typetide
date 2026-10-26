@@ -148,10 +148,10 @@ void App::setupSelectionTrigger() {
             capture::Capture copy = cap;
             // 点击图标才算触发：此刻冻结划词入口绑定的 profile
             SelectionIcon::shared().show(cap.anchor, cap.hasAnchor, mouse, [this, copy] {
-                presentRead(copy, translator::FreezeEntry(ProfileEntry::Selection, ShortcutAction::SmartPopup));
+                presentRead(copy, beginTrigger(ProfileEntry::Selection, ShortcutAction::SmartPopup).context);
             });
         } else if (st.selectionTrigger == SelectionTrigger::Auto) {
-            presentRead(cap, translator::FreezeEntry(ProfileEntry::Selection, ShortcutAction::SmartPopup));
+            presentRead(cap, beginTrigger(ProfileEntry::Selection, ShortcutAction::SmartPopup).context);
         }
     };
     SelectionMonitor::shared().start();
@@ -210,14 +210,19 @@ bool App::foregroundAppSkipped() const {
 
 // ---------- 触发：快捷键槽位 / 划词 → 绑定的 profile ----------
 
-void App::performEntry(ProfileEntry entry, ShortcutAction action) {
-    // 取词之前冻结：取词期间保存的设置只影响之后的触发。动作决定弹窗还是替换。
-    execution::ContextPtr context = translator::FreezeEntry(entry, action);
-    if (IsReplaceAction(action)) handleRewrite(std::move(context));
-    else handleRead(std::move(context));
+// 取词之前冻结：取词期间保存的设置只影响之后的触发；更新的触发让尚在取词的旧触发作废。
+App::Trigger App::beginTrigger(ProfileEntry entry, ShortcutAction action) {
+    return {translator::FreezeEntry(entry, action), ++triggerSeq_, Settings::shared().rewritePreview};
 }
 
-void App::handleRead(execution::ContextPtr context) {
+void App::performEntry(ProfileEntry entry, ShortcutAction action) {
+    // 动作决定弹窗还是替换
+    Trigger trigger = beginTrigger(entry, action);
+    if (IsReplaceAction(action)) handleRewrite(std::move(trigger));
+    else handleRead(std::move(trigger));
+}
+
+void App::handleRead(Trigger trigger) {
     const Settings& s = Settings::shared();
     util::Log("handleRead enabled=%d", s.enabled);
     if (!s.enabled || foregroundAppSkipped()) return;
@@ -227,13 +232,13 @@ void App::handleRead(execution::ContextPtr context) {
     if (auto cap = capture::UIAReadSelection()) {
         diagnostics::Record("selectionCapture", "success", {}, "uia", {}, -1, -1,
                             (int)cap->text.size());
-        presentRead(*cap, std::move(context));
+        presentRead(*cap, std::move(trigger.context));
         return;
     }
-    captureFallbackAsync(WM_APP_READ_CAPTURED, std::move(context));
+    captureFallbackAsync(WM_APP_READ_CAPTURED, std::move(trigger));
 }
 
-void App::handleRewrite(execution::ContextPtr context) {
+void App::handleRewrite(Trigger trigger) {
     const Settings& s = Settings::shared();
     if (!s.enabled || foregroundAppSkipped()) return;
 
@@ -241,15 +246,15 @@ void App::handleRewrite(execution::ContextPtr context) {
     if (auto cap = capture::UIACaptureForRewrite()) {
         diagnostics::Record("selectionCapture", "success", {}, "uia", {}, -1, -1,
                             (int)cap->text.size());
-        proceedRewrite(*cap, std::move(context));
+        proceedRewrite(*cap, std::move(trigger));
         return;
     }
-    captureFallbackAsync(WM_APP_REWRITE_CAPTURED, std::move(context));
+    captureFallbackAsync(WM_APP_REWRITE_CAPTURED, std::move(trigger));
 }
 
-void App::captureFallbackAsync(UINT message, execution::ContextPtr context) {
+void App::captureFallbackAsync(UINT message, Trigger trigger) {
     HWND hwnd = hwnd_;
-    std::thread([hwnd, message, context = std::move(context)] {
+    std::thread([hwnd, message, trigger = std::move(trigger)] {
         auto copied = capture::ClipboardFallbackCopy();
         if (!copied) {
             diagnostics::Record("selectionCapture", "failure");
@@ -261,7 +266,7 @@ void App::captureFallbackAsync(UINT message, execution::ContextPtr context) {
         captured->cap.text = *copied;
         captured->cap.anchor = capture::CursorAnchor();
         captured->cap.hasAnchor = true;
-        captured->context = context;
+        captured->trigger = trigger;
         if (!PostMessageW(hwnd, message, 0, (LPARAM)captured)) delete captured;
     }).detach();
 }
@@ -281,6 +286,8 @@ void App::beginUserTranslation() {
     ++generation_;
     translator::Cancel(currentReq_);
     translator::Cancel(rewriteReq_);
+    currentReq_ = 0;  // 被取消的流不再回调；晚到的 delta 也不再匹配
+    rewriteReq_ = 0;
 }
 
 // ---------- 读·弹窗会话（含改写预览）----------
@@ -349,14 +356,14 @@ void App::startStream(std::optional<Language> targetOverride) {
 
 // ---------- 写·输入改写 ----------
 
-void App::proceedRewrite(const capture::Capture& cap, execution::ContextPtr context) {
-    if (rejectIfTooLong(cap, context)) return;
-    // 先预览：弹窗显示译文 + Replace（整框改写替换时先全选）
-    if (Settings::shared().rewritePreview) {
-        openPopupSession(cap, std::move(context), cap.isWholeField);
+void App::proceedRewrite(const capture::Capture& cap, Trigger trigger) {
+    if (rejectIfTooLong(cap, trigger.context)) return;
+    // 先预览：弹窗显示译文 + Replace（整框改写替换时先全选）。开关取触发时的值。
+    if (trigger.preview) {
+        openPopupSession(cap, std::move(trigger.context), cap.isWholeField);
         return;
     }
-    replaceDirectly(cap, std::move(context));
+    replaceDirectly(cap, std::move(trigger.context));
 }
 
 void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr context) {
@@ -365,6 +372,8 @@ void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr con
         showErrorPopup(cap.text, Language::English, anchor, kNoProfileError);
         return;
     }
+    // 旧弹窗会话被取代：关掉它，免得停在半截译文上还能点 Replace
+    PopupWindow::shared().close();
     beginUserTranslation();
     // 直接替换：异步流结束后回主线程粘贴；期间若有新的用户翻译则丢弃本结果。
     const Language target =
@@ -416,91 +425,84 @@ void App::showErrorPopup(const std::wstring& original, Language target, RECT anc
 
 // ---------- 消息处理 ----------
 
+void App::onHotkey(WPARAM id) {
+    // 物理槽位决定 profile，槽位配置的动作决定方向与弹窗/替换
+    const Settings& s = Settings::shared();
+    if (id == kReadHotkeyId) performEntry(ProfileEntry::Shortcut1, s.readShortcutAction);
+    else if (id == kRewriteHotkeyId) performEntry(ProfileEntry::Shortcut2, s.rewriteShortcutAction);
+}
+
+void App::onTrayEvent(UINT event) {
+    if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP || event == WM_LBUTTONUP)
+        tray_.showMenu(hwnd_);
+    else if (event == WM_LBUTTONDBLCLK)
+        openSettings();
+}
+
+void App::onTranslationDone(uint64_t reqId, const DoneMsg& done) {
+    PopupWindow& popup = PopupWindow::shared();
+    if (reqId != currentReq_ || !popup.isVisible()) return;
+    if (!done.ok)
+        popup.setError(done.error);
+    else if (!sessionContext_ || !execution::DeliveredOutput(sessionContext_->profile, popup.translation()))
+        popup.setError(L"No translation returned");
+    else
+        popup.finishTranslation();
+}
+
+void App::onRewriteDone(RewriteResult& result) {
+    if (result.generation != generation_) return;  // 已有更新的用户翻译：不再粘贴
+    if (result.ok)
+        replacer::ReplaceAsync(std::move(result.text), result.isWholeField);
+    else
+        showErrorPopup(result.original, result.target, result.anchor, result.error);
+}
+
+void App::onCaptured(UINT message, CapturedSelection& captured) {
+    if (captured.trigger.seq != triggerSeq_) return;  // 取词晚到，期间已有更新的触发
+    if (message == WM_APP_READ_CAPTURED)
+        presentRead(captured.cap, std::move(captured.trigger.context));
+    else
+        proceedRewrite(captured.cap, std::move(captured.trigger));
+}
+
 LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_HOTKEY:
-        // 物理槽位决定 profile，槽位配置的动作决定方向与弹窗/替换
-        if (wp == kReadHotkeyId)
-            performEntry(ProfileEntry::Shortcut1, Settings::shared().readShortcutAction);
-        else if (wp == kRewriteHotkeyId)
-            performEntry(ProfileEntry::Shortcut2, Settings::shared().rewriteShortcutAction);
+        onHotkey(wp);
         return 0;
-
-    case WM_APP_TRAY: {
-        UINT event = LOWORD(lp);
-        if (event == WM_CONTEXTMENU || event == WM_RBUTTONUP || event == WM_LBUTTONUP)
-            tray_.showMenu(hwnd_);
-        else if (event == WM_LBUTTONDBLCLK)
-            openSettings();
+    case WM_APP_TRAY:
+        onTrayEvent(LOWORD(lp));
         return 0;
-    }
-
     case WM_APP_TR_DELTA: {
-        auto* delta = (std::wstring*)lp;
+        std::unique_ptr<std::wstring> delta((std::wstring*)lp);
         if ((uint64_t)wp == currentReq_ && PopupWindow::shared().isVisible())
             PopupWindow::shared().appendDelta(*delta);
-        delete delta;
         return 0;
     }
-
-    case WM_APP_TR_DONE: {
-        auto* done = (DoneMsg*)lp;
-        PopupWindow& popup = PopupWindow::shared();
-        if ((uint64_t)wp == currentReq_ && popup.isVisible()) {
-            if (!done->ok)
-                popup.setError(done->error);
-            else if (!sessionContext_ || !execution::DeliveredOutput(sessionContext_->profile, popup.translation()))
-                popup.setError(L"No translation returned");
-            else
-                popup.finishTranslation();
-        }
-        delete done;
+    case WM_APP_TR_DONE:
+        onTranslationDone((uint64_t)wp, *std::unique_ptr<DoneMsg>((DoneMsg*)lp));
         return 0;
-    }
-
-    case WM_APP_REWRITE_DONE: {
-        auto* r = (RewriteResult*)lp;
-        if (r->generation == generation_) {
-            if (r->ok)
-                replacer::ReplaceAsync(std::move(r->text), r->isWholeField);
-            else
-                showErrorPopup(r->original, r->target, r->anchor, r->error);
-        }
-        delete r;
+    case WM_APP_REWRITE_DONE:
+        onRewriteDone(*std::unique_ptr<RewriteResult>((RewriteResult*)lp));
         return 0;
-    }
-
     case WM_APP_UPDATE:
         tray_.setUpdateAvailable(true);
         return 0;
-
     case WM_APP_OPEN_SETTINGS:
         openSettings();
         return 0;
-
     case WM_APP_MODELS: {
         // 工作线程拉回的已装模型列表；Settings 的比对与保存在主线程做
-        auto* models = (std::vector<std::wstring>*)lp;
+        std::unique_ptr<std::vector<std::wstring>> models((std::vector<std::wstring>*)lp);
         ollamamodels::ApplyResolvedModels(*models);
         ollamamodels::PreloadAsync();
-        delete models;
         return 0;
     }
-
-    case WM_APP_READ_CAPTURED: {
-        auto* captured = (CapturedSelection*)lp;
-        presentRead(captured->cap, captured->context);
-        delete captured;
+    case WM_APP_READ_CAPTURED:
+    case WM_APP_REWRITE_CAPTURED:
+        onCaptured(msg, *std::unique_ptr<CapturedSelection>((CapturedSelection*)lp));
         return 0;
-    }
-
-    case WM_APP_REWRITE_CAPTURED: {
-        auto* captured = (CapturedSelection*)lp;
-        proceedRewrite(captured->cap, captured->context);
-        delete captured;
-        return 0;
-    }
-
     case WM_DESTROY:
         tray_.remove();
         return 0;

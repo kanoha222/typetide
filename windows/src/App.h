@@ -60,21 +60,33 @@ private:
         Language target;
         uint64_t generation;  // 过期（已有更新的用户翻译）则丢弃，不再粘贴
     };
+    /// 一次触发在主线程冻结的全部输入；异步取词带着它回来。
+    struct Trigger {
+        execution::ContextPtr context;  // 已提交快照里该入口绑定的 profile
+        uint64_t seq = 0;               // 触发序号：取词晚到且已有更新的触发 → 丢弃
+        bool preview = false;           // 触发时的改写预览开关
+    };
     struct CapturedSelection {
         capture::Capture cap;
-        execution::ContextPtr context;  // 触发时冻结的 profile
+        Trigger trigger;
     };
 
+    Trigger beginTrigger(ProfileEntry entry, ShortcutAction action);
     void performEntry(ProfileEntry entry, ShortcutAction action);
-    void handleRead(execution::ContextPtr context);
-    void handleRewrite(execution::ContextPtr context);
-    void captureFallbackAsync(UINT message, execution::ContextPtr context);
+    void handleRead(Trigger trigger);
+    void handleRewrite(Trigger trigger);
+    void captureFallbackAsync(UINT message, Trigger trigger);
     void presentRead(const capture::Capture& cap, execution::ContextPtr context);
-    void proceedRewrite(const capture::Capture& cap, execution::ContextPtr context);
+    void proceedRewrite(const capture::Capture& cap, Trigger trigger);
     void openPopupSession(const capture::Capture& cap, execution::ContextPtr context, bool replaceSelectAll);
     void replaceDirectly(const capture::Capture& cap, execution::ContextPtr context);
     /// 新的用户翻译使上一次失效：取消其流，丢弃其尚未粘贴的直接替换结果。
     void beginUserTranslation();
+    void onTranslationDone(uint64_t reqId, const DoneMsg& done);
+    void onRewriteDone(RewriteResult& result);
+    void onCaptured(UINT message, CapturedSelection& captured);
+    void onTrayEvent(UINT event);
+    void onHotkey(WPARAM id);
     /// 超长输入直接弹错误提示（LLM 又慢又贵，弹窗也放不下）；返回 true = 已拦截
     bool rejectIfTooLong(const capture::Capture& cap, const execution::ContextPtr& context);
     void startStream(std::optional<Language> targetOverride);
@@ -87,7 +99,8 @@ private:
     TrayIcon tray_;
     uint64_t currentReq_ = 0;                  // 当前弹窗会话的流
     uint64_t rewriteReq_ = 0;                  // 当前直接替换的流（弹窗关闭不会取消它）
-    uint64_t generation_ = 0;
+    uint64_t generation_ = 0;                  // 翻译会话代次（直接替换结果按它判过期）
+    uint64_t triggerSeq_ = 0;                  // 触发序号（异步取词按它判过期）
     execution::ContextPtr sessionContext_;     // 弹窗会话的冻结 profile（重试/改目标语言沿用）
     std::wstring sessionText_;
     bool currentReplaceSelectAll_ = false;     // 弹窗 Replace 时是否先全选
