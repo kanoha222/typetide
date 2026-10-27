@@ -118,6 +118,7 @@ add_executable(TranslationExecutionSelfTest
     ../src/EndpointPolicy.cpp
     ../src/TranslationExecution.cpp
     ../src/TranslationSession.cpp
+    ../src/ProfileEditor.cpp
     TranslationExecutionSupport.cpp
     TranslationExecutionPromptTests.cpp
     TranslationExecutionDirectionTests.cpp
@@ -127,6 +128,7 @@ add_executable(TranslationExecutionSelfTest
     TranslationExecutionCacheTests.cpp
     TranslationExecutionRuntimeTests.cpp
     TranslationSessionTests.cpp
+    ProfileEditorTests.cpp
     TranslationExecutionSelfTest.cpp
 )
 

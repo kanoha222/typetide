@@ -15,6 +15,7 @@ int main() {
     RunCacheTests();
     RunRuntimeContractTests();
     RunSessionTests();
+    RunProfileEditorTests();
     std::printf("[execution] %d failure(s)\n", FailureCount());
     return FailureCount() == 0 ? 0 : 1;
 }
