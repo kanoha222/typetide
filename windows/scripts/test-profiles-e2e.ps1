@@ -59,8 +59,43 @@ function Find-AppWindow([string]$className, [string]$title = $null) {
     return $AE::RootElement.FindFirst($Scope::Children, $all)
 }
 
-function Find-Id($parent, [int]$id) { return $parent.FindFirst($Scope::Descendants, (Cond $AE::AutomationIdProperty ([string]$id))) }
-function Invoke-El($el) { $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+$ClassOf = @{
+    3001 = 'ListBox'; 3002 = 'Button'; 3004 = 'Button'; 3010 = 'Edit'; 3021 = 'Button'; 3023 = 'Edit'
+    3025 = 'Edit'; 3041 = 'Button'; 3042 = 'Button'; 3043 = 'Static'; 7 = 'Button'
+}
+
+function Describe($el) {
+    if (-not $el) { return '<none>' }
+    $c = $el.Current
+    $name = [string]$c.Name
+    if ($name.Length -gt 40) { $name = $name.Substring(0, 40) }
+    return "{0} id='{1}' class='{2}' name='{3}'" -f $c.ControlType.ProgrammaticName, $c.AutomationId, $c.ClassName, $name
+}
+
+# Diagnostic listing of a window's UIA tree (control types, IDs, classes; synthetic names only).
+function Dump-Tree($root, [int]$max = 60) {
+    $all = $root.FindAll($Scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    Write-Output "  UIA tree ($($all.Count) elements):"
+    $n = 0
+    foreach ($e in $all) {
+        if ($n++ -ge $max) { break }
+        Write-Output "    $(Describe $e)"
+    }
+}
+
+function Find-Id($parent, [int]$id) {
+    $conditions = @((Cond $AE::AutomationIdProperty ([string]$id)))
+    if ($ClassOf.ContainsKey($id)) { $conditions += (Cond $AE::ClassNameProperty $ClassOf[$id]) }
+    if ($conditions.Count -eq 1) { return $parent.FindFirst($Scope::Descendants, $conditions[0]) }
+    $typed = [System.Windows.Automation.Condition[]]$conditions
+    $all = New-Object System.Windows.Automation.AndCondition -ArgumentList (,$typed)
+    return $parent.FindFirst($Scope::Descendants, $all)
+}
+
+function Invoke-El($el) {
+    try { $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+    catch { Write-Output "  (Invoke failed on $(Describe $el))"; throw }
+}
 function Set-Value($el, [string]$text) { $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($text) }
 # Managed UIA exposes ValuePattern only on single-line edits; multiline edits are Documents with
 # TextPattern. Write them with WM_SETTEXT (which sends no EN_CHANGE; the editor re-reads its
@@ -111,8 +146,12 @@ function Close-Discarding($window) {
 
 function Test-CreateAndSave($window) {
     Write-Output "[create, edit and save]"
-    $list = Find-Id $window $IdList
-    Check ((Item-Count $list) -eq 2) "the default configuration lists two profiles"
+    Dump-Tree $window
+    $list = Wait-For { Find-Id $window $IdList }
+    Check ($null -ne $list) "the profile list is found" (Describe $list)
+    if (-not $list) { return }
+    $listed = Wait-For { (Item-Count $list) -eq 2 }
+    Check ([bool]$listed) "the default configuration lists two profiles" "found $(Item-Count $list)"
     Invoke-El (Find-Id $window $IdAdd)
     Check ([bool](Wait-For { (Item-Count $list) -eq 3 })) "Add appends a profile"
     Set-Value (Find-Id $window $IdName) 'E2E profile & more'
