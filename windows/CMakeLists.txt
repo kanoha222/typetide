@@ -42,6 +42,7 @@ add_executable(TypeTide WIN32
     src/SelectionMonitor.cpp
     src/TrayIcon.cpp
     src/SettingsWindow.cpp
+    src/TranslationProfilesWindow.cpp
     src/LaunchAtLogin.cpp
     src/UpdateChecker.cpp
     src/SelfTest.cpp

@@ -10,6 +10,7 @@ on:
       - windows/src/**
       - windows/tests/**
       - windows/scripts/mock-openai.ps1
+      - windows/scripts/test-profiles-e2e.ps1
 
 permissions:
   contents: read
@@ -316,5 +317,62 @@ jobs:
         with:
           name: translation-runtime-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.RUNTIME_LOG_DIR }}/*
+          if-no-files-found: warn
+          retention-days: 7
+
+  profile-editor-uia:
+    name: Profile editor UIA test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-editor-build'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-editor-logs'
+          $dataDir = Join-Path $env:RUNNER_TEMP 'typetide-editor-data'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "EDITOR_BUILD_DIR=$buildDir"
+            "EDITOR_LOG_DIR=$logDir"
+            "EDITOR_DATA_DIR=$dataDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure TypeTide
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:EDITOR_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows -B "$env:EDITOR_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:EDITOR_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build TypeTide
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:EDITOR_BUILD_DIR" --config Release --target TypeTide --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:EDITOR_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Drive the profile editor through UI Automation (failures are not masked)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/scripts/test-profiles-e2e.ps1 `
+              -Exe "$env:EDITOR_BUILD_DIR/Release/TypeTide.exe" -DataDir "$env:EDITOR_DATA_DIR" 2>&1 |
+              Tee-Object -FilePath "$env:EDITOR_LOG_DIR/uia.log"
+          exit $LASTEXITCODE
+
+      - name: Preserve configure, build and UIA logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: profile-editor-uia-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EDITOR_LOG_DIR }}/*
           if-no-files-found: warn
           retention-days: 7

@@ -8,6 +8,7 @@
 #include "CrashDump.h"
 #include "RuntimeSelfTest.h"
 #include "SelfTest.h"
+#include "TranslationProfilesWindow.h"
 #include "Util.h"
 #include <objbase.h>
 #include <shellapi.h>
@@ -112,9 +113,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     }
 
     if (!App::shared().init(inst)) return 1;
+    if (args.find(L"--open-profiles") != std::wstring::npos) App::shared().openProfiles();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (profileswindow::handleDialogMessage(&msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

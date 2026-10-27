@@ -43,6 +43,7 @@ public:
     /// 根据开关 + 快捷键 + 划词设置重新装配触发（设置变化后调用）
     void applyEnabledState();
     void openSettings();
+    void openProfiles();
 
 private:
     App() = default;

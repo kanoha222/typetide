@@ -21,6 +21,7 @@ public:
 
     std::function<void()> onToggleEnabled;
     std::function<void()> onOpenSettings;
+    std::function<void()> onOpenProfiles;
     std::function<void()> onOpenReleases;
     std::function<void()> onQuit;
     /// Binding submenus: bind `entry` (shortcut slot 1/2, selection) to a profile id.

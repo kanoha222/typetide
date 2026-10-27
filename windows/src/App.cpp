@@ -9,6 +9,7 @@
 #include "SelectionMonitor.h"
 #include "Settings.h"
 #include "SettingsWindow.h"
+#include "TranslationProfilesWindow.h"
 #include "TextReplacer.h"
 #include "Translator.h"
 #include "UpdateChecker.h"
@@ -67,6 +68,7 @@ bool App::init(HINSTANCE inst) {
         applyEnabledState();
     };
     tray_.onOpenSettings = [this] { openSettings(); };
+    tray_.onOpenProfiles = [this] { openProfiles(); };
     tray_.onOpenReleases = [] { updatechecker::OpenReleasesPage(); };
     tray_.onQuit = [this] { quit(); };
     tray_.onBindProfile = [this](ProfileEntry entry, const std::string& profileId) {
@@ -169,6 +171,10 @@ void App::setupSelectionTrigger() {
 
 void App::openSettings() {
     SettingsWindow::open(hwnd_);
+}
+
+void App::openProfiles() {
+    profileswindow::open(hwnd_);
 }
 
 void App::quit() {

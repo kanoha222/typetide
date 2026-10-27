@@ -12,6 +12,7 @@ enum MenuId : UINT {
     kMenuReadHint,
     kMenuRewriteHint,
     kMenuSettings,
+    kMenuProfiles,
     kMenuQuit,
     kMenuBindBase = 1000,  // + slot * kBindStride + profile index
 };
@@ -43,6 +44,9 @@ void dispatchCommand(const TrayIcon& tray, UINT cmd, const std::vector<BindingSl
         break;
     case kMenuSettings:
         if (tray.onOpenSettings) tray.onOpenSettings();
+        break;
+    case kMenuProfiles:
+        if (tray.onOpenProfiles) tray.onOpenProfiles();
         break;
     case kMenuQuit:
         if (tray.onQuit) tray.onQuit();
@@ -139,6 +143,7 @@ void TrayIcon::showMenu(HWND owner) {
     appendBindingMenus(menu, slots, config);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
+    AppendMenuW(menu, MF_STRING, kMenuProfiles, L"Manage profiles…");
     AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings…");
     AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit TypeTide");
 
