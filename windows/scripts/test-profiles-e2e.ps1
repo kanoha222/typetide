@@ -1,6 +1,8 @@
 # Profile editor UIA end-to-end test: launches the real TypeTide.exe with --open-profiles in an
-# isolated TYPETIDE_DATA_DIR and drives the native editor through UI Automation. Synthetic data
-# only: no clipboard, credentials, network or user selection. Run with Windows PowerShell 5.1.
+# isolated TYPETIDE_DATA_DIR and drives the native editor through UI Automation. The editor is
+# only given synthetic data: no clipboard, credentials or user selection. (The app's own startup
+# update check may still reach the network; nothing in this test sends profile data anywhere.)
+# Run with Windows PowerShell 5.1.
 # Exit codes: 0 = all checks passed, 1 = failures, 2 = test environment problem.
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
@@ -9,6 +11,14 @@ param(
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class EditText {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr wParam, string lParam);
+}
+"@
 
 # Control IDs of TranslationProfilesWindow (exposed by UIA as AutomationId).
 $IdList = 3001; $IdAdd = 3002; $IdDelete = 3004
@@ -20,6 +30,7 @@ $AE = [System.Windows.Automation.AutomationElement]
 $Scope = [System.Windows.Automation.TreeScope]
 $script:failures = 0
 $script:app = $null
+$script:newId = $null
 
 function Check([bool]$cond, [string]$name, [string]$detail = "") {
     if ($cond) { Write-Output "  ok   $name" }
@@ -28,33 +39,52 @@ function Check([bool]$cond, [string]$name, [string]$detail = "") {
 
 function Cond($property, $value) { New-Object System.Windows.Automation.PropertyCondition($property, $value) }
 
-function Wait-For([scriptblock]$probe, [int]$timeoutMs = 10000) {
+# Polls $probe until it returns something truthy or the timeout passes (then $null).
+function Wait-For([scriptblock]$probe, [int]$timeoutMs = 5000, [int]$intervalMs = 200) {
     $deadline = [DateTime]::UtcNow.AddMilliseconds($timeoutMs)
-    do {
+    while ($true) {
         $result = & $probe
         if ($result) { return $result }
-        Start-Sleep -Milliseconds 200
-    } while ([DateTime]::UtcNow -lt $deadline)
-    return $null
+        if ([DateTime]::UtcNow -ge $deadline) { return $null }
+        Start-Sleep -Milliseconds $intervalMs
+    }
 }
 
-function Find-AppWindow([string]$className) {
-    $byClass = Cond $AE::ClassNameProperty $className
-    $byProcess = Cond $AE::ProcessIdProperty $script:app.Id
-    $both = New-Object System.Windows.Automation.AndCondition($byClass, $byProcess)
-    return $AE::RootElement.FindFirst($Scope::Children, $both)
+# A top-level window of the app under test, optionally with an exact title.
+function Find-AppWindow([string]$className, [string]$title = $null) {
+    $conditions = @((Cond $AE::ClassNameProperty $className), (Cond $AE::ProcessIdProperty $script:app.Id))
+    if ($title) { $conditions += (Cond $AE::NameProperty $title) }
+    $typed = [System.Windows.Automation.Condition[]]$conditions
+    $all = New-Object System.Windows.Automation.AndCondition -ArgumentList (,$typed)  # one params array
+    return $AE::RootElement.FindFirst($Scope::Children, $all)
 }
 
 function Find-Id($parent, [int]$id) { return $parent.FindFirst($Scope::Descendants, (Cond $AE::AutomationIdProperty ([string]$id))) }
 function Invoke-El($el) { $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
-function Select-El($el) { $el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
 function Set-Value($el, [string]$text) { $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($text) }
-function Get-Value($el) { return $el.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value }
+# Managed UIA exposes ValuePattern only on single-line edits; multiline edits are Documents with
+# TextPattern. Write them with WM_SETTEXT (which sends no EN_CHANGE; the editor re-reads its
+# controls at Save/Close) and read them through TextPattern.
+function Set-EditText($el, [string]$text) {
+    [EditText]::SendMessageW([IntPtr]$el.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, $text) | Out-Null
+}
+function Get-DocumentText($el) {
+    return $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern).DocumentRange.GetText(-1)
+}
 function Item-Count($list) {
     $items = Cond $AE::ControlTypeProperty ([System.Windows.Automation.ControlType]::ListItem)
     return $list.FindAll($Scope::Children, $items).Count
 }
 function Status-Text($window) { return (Find-Id $window $IdStatus).Current.Name }
+
+# UIA radio buttons expose SelectionItem (not Toggle). The app re-reads the radio state at every
+# decision point, so a Select that is processed late still applies.
+function Choose-Custom($window) {
+    $radio = Find-Id $window $IdCustomMode
+    $radio.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    $prompt = Find-Id $window $IdPrompt
+    return [bool](Wait-For { $prompt.Current.IsEnabled })
+}
 
 function Read-Settings {
     $path = Join-Path $DataDir 'settings.json'
@@ -63,14 +93,17 @@ function Read-Settings {
 }
 
 function Start-Editor {
-    if ($script:app) { Stop-Process -Id $script:app.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500 }
+    if ($script:app) {
+        Stop-Process -Id $script:app.Id -Force -ErrorAction SilentlyContinue
+        $script:app.WaitForExit(5000) | Out-Null  # frees the single-instance mutex
+    }
     $script:app = Start-Process -FilePath $Exe -ArgumentList '--open-profiles' -PassThru
     return Wait-For { Find-AppWindow 'TypeTideProfiles' } 15000
 }
 
 function Close-Discarding($window) {
     Invoke-El (Find-Id $window $IdClose)
-    $dialog = Wait-For { Find-AppWindow '#32770' }
+    $dialog = Wait-For { Find-AppWindow '#32770' 'TypeTide' }
     if (-not $dialog) { return $false }
     Invoke-El (Find-Id $dialog $IdNo)
     return [bool](Wait-For { -not (Find-AppWindow 'TypeTideProfiles') })
@@ -81,22 +114,24 @@ function Test-CreateAndSave($window) {
     $list = Find-Id $window $IdList
     Check ((Item-Count $list) -eq 2) "the default configuration lists two profiles"
     Invoke-El (Find-Id $window $IdAdd)
-    Check ((Item-Count $list) -eq 3) "Add appends a profile"
+    Check ([bool](Wait-For { (Item-Count $list) -eq 3 })) "Add appends a profile"
     Set-Value (Find-Id $window $IdName) 'E2E profile & more'
-    Select-El (Find-Id $window $IdCustomMode)
-    Set-Value (Find-Id $window $IdPrompt) "Line 1`r`n`tLine 2  "
-    $preview = Get-Value (Find-Id $window $IdPreview)
-    Check ($preview -like '*Built-in*') "the preview explains that a new Built-in profile cannot run a custom prompt"
+    Check (Choose-Custom $window) "choosing a custom prompt enables the prompt editor"
+    Set-EditText (Find-Id $window $IdPrompt) "Line 1`r`n`tLine 2  "
+    $preview = Find-Id $window $IdPreview
+    $explained = Wait-For { (Get-DocumentText $preview) -like '*Built-in*' }
+    Check ([bool]$explained) "the preview explains that a new Built-in profile cannot run a custom prompt"
     Invoke-El (Find-Id $window $IdSave)
-    $saved = Wait-For { (Status-Text $window) -like 'Saved*' } 5000
+    $saved = Wait-For { (Status-Text $window) -like 'Saved*' }
     Check ([bool]$saved) "Save reports success" "status '$(Status-Text $window)'"
     $settings = Read-Settings
-    $profile = $settings.profiles | Where-Object { $_.name -eq 'E2E profile & more' }
-    Check ($null -ne $profile) "the new profile is written to settings.json"
-    Check ($profile.promptMode -eq 'custom' -and $profile.systemPrompt -eq "Line 1`r`n`tLine 2  ") `
+    $created = @($settings.profiles | Where-Object { $_.name -eq 'E2E profile & more' })
+    Check ($created.Count -eq 1) "the new profile is written to settings.json"
+    if ($created.Count -ne 1) { return }
+    Check ($created[0].promptMode -eq 'custom' -and $created[0].systemPrompt -eq "Line 1`r`n`tLine 2  ") `
         "the custom prompt is saved exactly"
     Check (@($settings.profiles).Count -eq 3) "settings.json holds three profiles"
-    return $profile.id
+    $script:newId = $created[0].id
 }
 
 function Test-DraftCancel($window) {
@@ -109,30 +144,34 @@ function Test-DraftCancel($window) {
 
 function Test-OversizePrompt($window) {
     Write-Output "[oversize prompt]"
-    Select-El (Find-Id $window $IdCustomMode)
-    Set-Value (Find-Id $window $IdPrompt) ('x' * 33000)
+    Check (Choose-Custom $window) "the first profile switches to a custom prompt"
+    Set-EditText (Find-Id $window $IdPrompt) ('x' * 33000)
     Invoke-El (Find-Id $window $IdSave)
-    $refused = Wait-For { (Status-Text $window) -like 'Not saved*' } 5000
+    $refused = Wait-For { (Status-Text $window) -like 'Not saved*' }
     Check ([bool]$refused) "an over-long prompt is refused" "status '$(Status-Text $window)'"
     $first = @((Read-Settings).profiles)[0]
     Check ($first.promptMode -eq 'preset' -and $first.systemPrompt -eq '') "nothing truncated was saved"
     Check (Close-Discarding $window) "the refused draft is discarded on close"
 }
 
+function Find-ReplacementItem([string]$namePattern) {
+    $menu = Find-AppWindow '#32768'  # the popup menu window
+    if (-not $menu) { return $null }
+    $items = $menu.FindAll($Scope::Descendants,
+        (Cond $AE::ControlTypeProperty ([System.Windows.Automation.ControlType]::MenuItem)))
+    return $items | Where-Object { $_.Current.Name -like $namePattern } | Select-Object -First 1
+}
+
 function Test-DeleteWithReplacement($window, [string]$replacementId) {
     Write-Output "[delete a bound profile with a replacement]"
     Invoke-El (Find-Id $window $IdDelete)
-    $menuItem = Wait-For {
-        $items = $AE::RootElement.FindAll($Scope::Descendants,
-            (Cond $AE::ControlTypeProperty ([System.Windows.Automation.ControlType]::MenuItem)))
-        $items | Where-Object { $_.Current.Name -like 'E2E profile*' } | Select-Object -First 1
-    }
+    $menuItem = Wait-For { Find-ReplacementItem 'E2E profile*' }
     Check ($null -ne $menuItem) "deleting a bound profile asks for a replacement"
     if (-not $menuItem) { return }
     Invoke-El $menuItem
     Check ([bool](Wait-For { (Item-Count (Find-Id $window $IdList)) -eq 2 })) "the bound profile is removed"
     Invoke-El (Find-Id $window $IdSave)
-    Wait-For { (Status-Text $window) -like 'Saved*' } 5000 | Out-Null
+    Check ([bool](Wait-For { (Status-Text $window) -like 'Saved*' })) "the deletion is saved" "status '$(Status-Text $window)'"
     $settings = Read-Settings
     Check (@($settings.profiles).Count -eq 2) "settings.json holds two profiles after the delete"
     Check ($settings.shortcut1ProfileId -eq $replacementId -and $settings.selectionProfileId -eq $replacementId) `
@@ -140,6 +179,10 @@ function Test-DeleteWithReplacement($window, [string]$replacementId) {
 }
 
 if (-not (Test-Path $Exe)) { Write-Output "missing executable: $Exe"; exit 2 }
+if ((Test-Path $DataDir) -and @(Get-ChildItem -Force $DataDir).Count -gt 0) {
+    Write-Output "DataDir must be new or empty (refusing to touch existing data): $DataDir"
+    exit 2
+}
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $env:TYPETIDE_DATA_DIR = $DataDir
 
@@ -147,13 +190,14 @@ try {
     $window = Start-Editor
     Check ($null -ne $window) "the profile editor opens"
     if ($window) {
-        $newId = Test-CreateAndSave $window
+        Test-CreateAndSave $window
         Test-DraftCancel $window
         $window = Start-Editor
         Check ($null -ne $window -and (Item-Count (Find-Id $window $IdList)) -eq 3) "profiles survive a restart"
         if ($window) { Test-OversizePrompt $window }
         $window = Start-Editor
-        if ($window -and $newId) { Test-DeleteWithReplacement $window $newId }
+        Check ($null -ne $script:newId) "the created profile id is known"
+        if ($window -and $script:newId) { Test-DeleteWithReplacement $window $script:newId }
     }
 } finally {
     if ($script:app) { Stop-Process -Id $script:app.Id -Force -ErrorAction SilentlyContinue }

@@ -299,6 +299,30 @@ void testBindingCommit() {
           "a refused binding changes nothing");
 }
 
+void testEditorConflict() {
+    printf("[editor save conflict]\n");
+    Settings& settings = Settings::shared();
+    const ProfileConfiguration staleBaseline = settings.committedData().profileConfig;
+    std::string error;
+    // The tray changes a binding while an open editor still holds the older configuration.
+    if (!check(profilebinding::Commit(settings, ProfileEntry::Selection, "runtime-bound", &error),
+               "another binding change commits first", error)) return;
+    ProfileConfiguration draft = staleBaseline;
+    draft.profiles.front().name = "Edited from a stale editor";
+    error.clear();
+    check(!profilebinding::CommitConfiguration(settings, draft, &error, &staleBaseline) && !error.empty(),
+          "an editor save on a stale baseline is refused with an explanation");
+    Settings reloaded;
+    reloaded.load();
+    check(reloaded.snapshot().profileConfig == settings.committedData().profileConfig &&
+              reloaded.snapshot().profileConfig.bindings.selectionProfileId == "runtime-bound",
+          "the newer configuration on disk is kept");
+    const ProfileConfiguration current = settings.committedData().profileConfig;
+    error.clear();
+    check(profilebinding::CommitConfiguration(settings, current, &error, &current),
+          "a save on the current baseline commits", error);
+}
+
 void testReplaceGuards() {
     printf("[replacement guards]\n");
     const std::wstring original = L"CLIPBOARD_BEFORE_REPLACE";
@@ -363,6 +387,7 @@ int RunRuntimeSelfTests() {
     testLongUrl(env);
     testCommittedBinding(env);
     testBindingCommit();
+    testEditorConflict();
     testReplaceGuards();
     testEpochBackfill(env);
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nall runtime tests passed\n", g_failures);

@@ -53,6 +53,12 @@
 - 托盘新增“Shortcut 1 / Shortcut 2 / Selection profile”三个子菜单，列出已提交的 profile 并勾选当前绑定；选择后经 `profilebinding::Commit`（candidate commit，失败弹出原因）保存，只影响之后的触发。
 - 验证：纯函数测试覆盖上述会话序列与 `profiles::WithBinding`；`--selftest-runtime` 覆盖托盘绑定提交、替换中止后剪贴板不变（过期会话 / 目标窗口不在前台）、请求进行中改连接时缓存按 epoch 分开。真实按键粘贴路径与弹窗交互的 UIA 端到端测试仍未运行。
 
+## Phase 4：原生 profile 编辑器（进行中）
+
+- 第 1 步纯函数编辑器模型：RED `d6e3f55`（29 failure(s)），实现 `df0b8b3`，在 `209a345` 的纯函数 job 实证 GREEN。
+- 第 2 步原生窗口：UIA job 在 `209a345` 实证行为 RED（[job `122003876635`](https://github.com/kanoha222/typetide/actions/runs/40448037403/job/122003876635)：build 成功，唯一失败 “the profile editor opens”）。实现：单实例 `TranslationProfilesWindow`（托盘“Manage profiles…”与 `--open-profiles` 打开），左侧列表 + 新增/复制/删除，右侧名称、语言对、方向、backend/模型、本地/网络/云端路由说明、preset/custom 切换、多行提示词与变量说明、有效请求预览，底部三个入口绑定、固定文本测试、保存/关闭。草稿与运行时隔离：保存经 `profilebinding::CommitConfiguration`（以已提交值为基础，不提交也不丢弃其他未保存 draft；编辑器传入基线，若 profile 在别处被改则拒绝保存并说明）。关闭/切换时有未保存修改会询问保存/放弃/取消；删除被绑定的 profile 必须选择替换，最后一个不可删；悬空绑定在打开时提示。超长粘贴导致提示词被截断后为粘滞拒绝（必须清空重填），无法无损编辑的提示词禁用编辑并原样保留；固定文本测试只用合成句，结果按窗口与测试代次丢弃过期结果。GREEN 待观察。`--selftest-runtime` 新增的编辑器保存冲突用例与实现同时编写，未先观察到 RED。
+- 第 3 步（设置窗口改为摘要与入口、模型不静默替换、发现/健康检查版本守卫）待做。
+
 ## 验证入口与剩余门槛
 
 - [工作流](../../../.github/workflows/translation-profiles.yml) 分别运行 `ProfileCoreSelfTest`、`NativeStorageSelfTest`、`NativeTransactionSelfTest` 与新增的 `TranslationExecutionSelfTest`，保留真实失败退出码与日志构件。
