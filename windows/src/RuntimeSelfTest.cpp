@@ -276,9 +276,15 @@ void testBindingCommit() {
         translator::FreezeEntry(ProfileEntry::Shortcut2, ShortcutAction::SmartReplace);
     if (!check(inFlight && inFlight->profile.id != "runtime-bound", "shortcut 2 starts on another profile")) return;
     const std::string previous = inFlight->profile.id;
+    const std::string committedBase = settings.snapshot().openAIBaseURL;
+    settings.openAIBaseURL = "http://192.0.2.10/v1";  // an unrelated, unsaved (and insecure) draft
     std::string error;
     check(profilebinding::Commit(settings, ProfileEntry::Shortcut2, "runtime-bound", &error),
           "binding shortcut 2 to another profile commits", error);
+    check(settings.snapshot().openAIBaseURL == committedBase,
+          "a binding change never commits unrelated unsaved edits");
+    check(settings.openAIBaseURL == "http://192.0.2.10/v1", "unrelated unsaved edits stay as drafts");
+    settings.openAIBaseURL = committedBase;
     const execution::ContextPtr later = translator::FreezeEntry(ProfileEntry::Shortcut2, ShortcutAction::SmartReplace);
     check(later && later->profile.id == "runtime-bound", "later triggers use the new binding");
     check(inFlight->profile.id == previous, "a trigger frozen before the change keeps its profile");

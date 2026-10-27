@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Clipboard.h"
 #include "Hooks.h"
 #include "LocalDiagnostics.h"
 #include "OllamaModels.h"
@@ -26,6 +27,10 @@ constexpr int kRewriteHotkeyId = 2;
 // 超过这个长度不翻译：LLM 又慢又贵，弹窗也展示不下
 constexpr size_t kMaxInputChars = 5000;
 constexpr wchar_t kNoProfileError[] = L"No translation profile is bound to this action.";
+// 退出时给仍在还原剪贴板的替换/取词事务的最长等待：kQuitRetries × kQuitRetryMs
+constexpr UINT_PTR kQuitTimerId = 1;
+constexpr UINT kQuitRetryMs = 100;
+constexpr int kQuitRetries = 30;
 } // namespace
 
 App& App::shared() {
@@ -167,11 +172,26 @@ void App::openSettings() {
 }
 
 void App::quit() {
+    // AppExit 也取消没有弹窗的当前会话（直接替换、已点 Replace 的粘贴）：它们的粘贴会在
+    // 下一道守卫处放弃并还原剪贴板。
     PopupWindow::shared().close(session::CloseReason::AppExit);
+    cancelRequests(ledger_.close(ledger_.current(), session::CloseReason::AppExit));
+    UnregisterHotKey(hwnd_, kReadHotkeyId);
+    UnregisterHotKey(hwnd_, kRewriteHotkeyId);
     SelectionIcon::shared().hide();
     SelectionMonitor::shared().stop();
     translator::CancelAll();
     tray_.remove();
+    finishQuit();
+}
+
+void App::finishQuit() {
+    // 已发出 Ctrl+V 的替换还在等目标取数据（≤2s）时，先让它还原用户剪贴板。UI 线程只
+    // try_lock 轮询，从不等待这把锁；超时仍会退出。
+    if (!clipboard::TransactionMutex().try_lock() && quitAttempts_++ < kQuitRetries) {
+        SetTimer(hwnd_, kQuitTimerId, kQuitRetryMs, nullptr);
+        return;
+    }
     // 直接结束进程：分离的工作线程（流式翻译/替换）不再有机会
     // 在静态对象析构后继续跑（那是退出崩溃的经典来源）。
     ExitProcess(0);
@@ -259,8 +279,9 @@ void App::handleRewrite(Trigger trigger) {
 
 void App::captureFallbackAsync(UINT message, Trigger trigger) {
     HWND hwnd = hwnd_;
-    std::thread([hwnd, message, trigger = std::move(trigger)] {
-        auto copied = capture::ClipboardFallbackCopy();
+    const HWND target = GetForegroundWindow();  // 触发时的前台窗口：只从它复制、只粘贴回它
+    std::thread([hwnd, message, target, trigger = std::move(trigger)] {
+        auto copied = capture::ClipboardFallbackCopy(target);
         if (!copied) {
             diagnostics::Record("selectionCapture", "failure");
             return;
@@ -271,7 +292,7 @@ void App::captureFallbackAsync(UINT message, Trigger trigger) {
         captured->cap.text = *copied;
         captured->cap.anchor = capture::CursorAnchor();
         captured->cap.hasAnchor = true;
-        captured->cap.window = GetForegroundWindow();  // 刚收到 Ctrl+C 的窗口即粘贴目标
+        captured->cap.window = target;
         captured->trigger = trigger;
         if (!PostMessageW(hwnd, message, 0, (LPARAM)captured)) delete captured;
     }).detach();
@@ -279,6 +300,7 @@ void App::captureFallbackAsync(UINT message, Trigger trigger) {
 
 bool App::rejectIfTooLong(const capture::Capture& cap, const execution::ContextPtr& context) {
     if (cap.text.size() <= kMaxInputChars) return false;
+    beginUserTranslation();  // 被拒绝的触发也是新的用户操作：之前未落下的粘贴不再执行
     RECT anchor = cap.hasAnchor ? cap.anchor : capture::CursorAnchor();
     wchar_t msg[128];
     swprintf_s(msg, L"Selection is too long (%zu characters, max %zu)",
@@ -308,6 +330,7 @@ void App::presentRead(const capture::Capture& cap, execution::ContextPtr context
 void App::openPopupSession(const capture::Capture& cap, execution::ContextPtr context, bool replaceSelectAll) {
     RECT anchor = cap.hasAnchor ? cap.anchor : capture::CursorAnchor();
     if (!context) {
+        beginUserTranslation();
         showErrorPopup(cap.text, Language::English, anchor, kNoProfileError);
         return;
     }
@@ -393,6 +416,7 @@ void App::proceedRewrite(const capture::Capture& cap, Trigger trigger) {
 void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr context) {
     RECT anchor = cap.hasAnchor ? cap.anchor : capture::CursorAnchor();
     if (!context) {
+        beginUserTranslation();
         showErrorPopup(cap.text, Language::English, anchor, kNoProfileError);
         return;
     }
@@ -501,6 +525,12 @@ void App::onRewriteDone(RewriteResult& result) {
     }
 }
 
+void App::onModelsListed(const std::vector<std::wstring>& models) {
+    // 工作线程拉回的已装模型列表；Settings 的比对与保存在主线程做
+    ollamamodels::ApplyResolvedModels(models);
+    ollamamodels::PreloadAsync();
+}
+
 void App::onCaptured(UINT message, CapturedSelection& captured) {
     if (captured.trigger.seq != triggerSeq_) return;  // 取词晚到，期间已有更新的触发
     if (message == WM_APP_READ_CAPTURED)
@@ -532,16 +562,16 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_OPEN_SETTINGS:
         openSettings();
         return 0;
-    case WM_APP_MODELS: {
-        // 工作线程拉回的已装模型列表；Settings 的比对与保存在主线程做
-        std::unique_ptr<std::vector<std::wstring>> models((std::vector<std::wstring>*)lp);
-        ollamamodels::ApplyResolvedModels(*models);
-        ollamamodels::PreloadAsync();
+    case WM_APP_MODELS:
+        onModelsListed(*std::unique_ptr<std::vector<std::wstring>>((std::vector<std::wstring>*)lp));
         return 0;
-    }
     case WM_APP_READ_CAPTURED:
     case WM_APP_REWRITE_CAPTURED:
         onCaptured(msg, *std::unique_ptr<CapturedSelection>((CapturedSelection*)lp));
+        return 0;
+    case WM_TIMER:
+        if (wp != kQuitTimerId) break;
+        finishQuit();
         return 0;
     case WM_DESTROY:
         tray_.remove();

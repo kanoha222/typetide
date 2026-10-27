@@ -98,6 +98,7 @@ private:
     void onTranslationDone(const DoneMsg& done);
     void onRewriteDone(RewriteResult& result);
     void onCaptured(UINT message, CapturedSelection& captured);
+    void onModelsListed(const std::vector<std::wstring>& models);
     void onTrayEvent(UINT event);
     void onHotkey(WPARAM id);
     void bindProfile(ProfileEntry entry, const std::string& profileId);
@@ -108,6 +109,7 @@ private:
     bool foregroundAppSkipped() const;
     void showErrorPopup(const std::wstring& original, Language target, RECT anchor, const std::wstring& error);
     void quit();
+    void finishQuit();
 
     HWND hwnd_ = nullptr;
     TrayIcon tray_;
@@ -123,4 +125,5 @@ private:
     bool rewriteShortcutRegistered_ = false;
     bool shortcutsReady_ = false;
     UINT taskbarCreatedMsg_ = 0;   // explorer 重启后重挂托盘图标
+    int quitAttempts_ = 0;         // 退出时等剪贴板事务的轮询次数
 };

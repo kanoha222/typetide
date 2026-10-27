@@ -104,6 +104,9 @@ struct Settings : SettingsData {
     bool isReadOnly() const { return storageState_ != StorageState::Ready; }
     uint64_t connectionEpoch() const { return connectionEpoch_; }
     const std::string& credentialRef() const { return credentialRef_; }
+    // The last committed values (the drafts above may differ). Main thread; for building a
+    // candidate that changes one thing without committing unrelated drafts.
+    const SettingsData& committedData() const { return committed_; }
 
     bool commit(const Settings& candidate, std::string* error = nullptr);
     // Resolved committed values only. No credential I/O; copy on the main thread.

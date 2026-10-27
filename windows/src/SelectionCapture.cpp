@@ -177,8 +177,12 @@ std::optional<Capture> UIACaptureForRewrite() {
     return std::nullopt;
 }
 
-std::optional<std::wstring> ClipboardFallbackCopy() {
+std::optional<std::wstring> ClipboardFallbackCopy(HWND target) {
     std::lock_guard transaction(clipboard::TransactionMutex());  // never overlaps a paste replace
+    if (GetForegroundWindow() != target) {
+        util::Log("ClipboardFallbackCopy skipped: foreground changed while waiting");
+        return std::nullopt;
+    }
     clipboard::Snapshot saved = clipboard::Take();
     DWORD before = clipboard::SequenceNumber();
 

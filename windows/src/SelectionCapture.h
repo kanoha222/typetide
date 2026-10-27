@@ -34,7 +34,9 @@ std::optional<Capture> UIACaptureForRewrite();
 std::optional<Capture> UIASelectionOnly();
 
 /// 模拟 Ctrl+C 复制兜底，用后还原剪贴板（阻塞 ≤400ms，工作线程调用）。
-std::optional<std::wstring> ClipboardFallbackCopy();
+/// `target` 是触发时的前台窗口：若等剪贴板事务锁期间前台已换（例如前一次替换还在粘贴），
+/// 不发 Ctrl+C，返回 nullopt——绝不复制、也不替换另一个窗口的选区。
+std::optional<std::wstring> ClipboardFallbackCopy(HWND target);
 
 /// 兜底锚点：光标位置一小块矩形
 RECT CursorAnchor();
