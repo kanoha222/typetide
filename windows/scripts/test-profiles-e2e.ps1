@@ -42,13 +42,28 @@ public static class W {
             uint owner;
             GetWindowThreadProcessId(hwnd, out owner);
             if (owner != pid || !IsWindowVisible(hwnd) || ClassOf(hwnd) != cls) return true;
-            if (title != null && Text(hwnd) != title) return true;
+            if (!string.IsNullOrEmpty(title) && Text(hwnd) != title) return true;  // PowerShell passes $null as ""
             found = hwnd;
             return false;
         };
         EnumWindows(callback, IntPtr.Zero);
         GC.KeepAlive(callback);
         return found;
+    }
+
+    /// Diagnostic list of the top-level windows of process `pid`: class, caption, visibility.
+    public static string ListTop(uint pid) {
+        StringBuilder all = new StringBuilder();
+        EnumProc callback = delegate (IntPtr hwnd, IntPtr unused) {
+            uint owner;
+            GetWindowThreadProcessId(hwnd, out owner);
+            if (owner == pid)
+                all.AppendFormat("    class='{0}' title='{1}' visible={2}\n", ClassOf(hwnd), Text(hwnd), IsWindowVisible(hwnd));
+            return true;
+        };
+        EnumWindows(callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return all.ToString();
     }
 
     /// Text of a window in another process (WM_GETTEXT is marshaled; GetWindowText is not).
@@ -126,7 +141,11 @@ function Start-Editor {
     }
     $script:app = Start-Process -FilePath $Exe -ArgumentList '--open-profiles' -PassThru
     $window = Wait-For { Find-AppWindow 'TypeTideProfiles' } 15000
-    if (-not $window) { return $null }
+    if (-not $window) {
+        Write-Host "  top-level windows of the app:"  # host, not output: Start-Editor returns the window
+        Write-Host ([W]::ListTop([uint32]$script:app.Id))
+        return $null
+    }
     # The window is shown once open() has filled the controls.
     if (-not (Wait-For { (Item-Count $window) -gt 0 })) { return $null }
     return $window
