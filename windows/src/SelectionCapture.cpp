@@ -142,7 +142,9 @@ RECT CursorAnchor() {
 std::optional<Capture> UIASelectionOnly() {
     ComPtr<IUIAutomationElement> el = focusedElement();
     if (!el) return std::nullopt;
-    return uiaSelection(el.Get());
+    auto cap = uiaSelection(el.Get());
+    if (cap) cap->window = GetForegroundWindow();
+    return cap;
 }
 
 std::optional<Capture> UIAReadSelection() {
@@ -151,6 +153,7 @@ std::optional<Capture> UIAReadSelection() {
     if (!el) return std::nullopt;
     auto cap = uiaSelection(el.Get());
     util::Log("UIAReadSelection uia=%d", cap.has_value());
+    if (cap) cap->window = GetForegroundWindow();
     return cap;
 }
 
@@ -158,19 +161,24 @@ std::optional<Capture> UIACaptureForRewrite() {
     ComPtr<IUIAutomationElement> el = focusedElement();
     if (!el) return std::nullopt;
     // 有选区 → 只改选区
-    if (auto cap = uiaSelection(el.Get())) return cap;
+    if (auto cap = uiaSelection(el.Get())) {
+        cap->window = GetForegroundWindow();
+        return cap;
+    }
     // 无选区 → 改整个输入框
     if (auto value = uiaWholeValue(el.Get())) {
         Capture cap;
         cap.text = *value;
         cap.isWholeField = true;
         cap.hasAnchor = elementRect(el.Get(), &cap.anchor);
+        cap.window = GetForegroundWindow();
         return cap;
     }
     return std::nullopt;
 }
 
 std::optional<std::wstring> ClipboardFallbackCopy() {
+    std::lock_guard transaction(clipboard::TransactionMutex());  // never overlaps a paste replace
     clipboard::Snapshot saved = clipboard::Take();
     DWORD before = clipboard::SequenceNumber();
 

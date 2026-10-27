@@ -44,6 +44,14 @@
 - **过渡期（用户选择）**：旧设置窗口的 backend/model/语言/方向/风格控件已不影响翻译，连接字段（Ollama host/port、API base URL/key）仍有效；profile 编辑器（Phase 4）完成前需编辑 settings.json 修改 profile 与绑定。
 - 验证：`TypeTide.exe --selftest-runtime`（job `translation-runtime`）用真实 Translator + WinHTTP 对本机 mock（`windows/scripts/mock-openai.ps1`，只记录请求路径/请求体/是否带 Authorization，不记录其值）检查线上请求体与 Prepare 一致、custom 原样输出、think 重试、缓存与 epoch 隔离、拒绝重定向、拒绝远程明文 HTTP、超过 2048 字符的 URL 及已提交设置到快捷键的路径。
 
+## Phase 3：会话生命周期与托盘绑定（RED `6e7c858`，GREEN 待验证）
+
+- 行为 RED：run `40277449813`，纯函数 [job `121423092965`](https://github.com/kanoha222/typetide/actions/runs/40277449813/job/121423092965) 19 failure(s)，运行时 mock [job `121423093049`](https://github.com/kanoha222/typetide/actions/runs/40277449813/job/121423093049) 5 failure(s)，均 build 成功、exit 1。
+- `session::Ledger`（纯函数，主线程）：每次用户翻译开新会话，旧会话的请求被取消、未提交的粘贴失效；流回调只带创建时的 `Ticket`（会话 + 尝试序号），因此同步缓存命中、重试与改目标语言的旧回调都能被丢弃。弹窗关闭带原因：Dismiss 取消本会话，ReplaceCommit 关闭弹窗但保留粘贴，Superseded 只作废被取代的会话，AppExit 取消当前会话；过期弹窗的关闭不会影响新会话。
+- 替换的最后边界：`replacer` 在动剪贴板前、Ctrl+A 前、Ctrl+V 前各核对一次 `PasteGuard`（会话仍是最新且取词时的前台窗口仍在前台），否则放弃并还原剪贴板；Ctrl+V 发出后无法撤回。取词兜底（Ctrl+C）与替换用同一把剪贴板事务锁串行，只在工作线程上等待。取词时记录前台窗口（`Capture::window`）。
+- 托盘新增“Shortcut 1 / Shortcut 2 / Selection profile”三个子菜单，列出已提交的 profile 并勾选当前绑定；选择后经 `profilebinding::Commit`（candidate commit，失败弹出原因）保存，只影响之后的触发。
+- 验证：纯函数测试覆盖上述会话序列与 `profiles::WithBinding`；`--selftest-runtime` 覆盖托盘绑定提交、替换中止后剪贴板不变（过期会话 / 目标窗口不在前台）、请求进行中改连接时缓存按 epoch 分开。真实按键粘贴路径与弹窗交互的 UIA 端到端测试仍未运行。
+
 ## 验证入口与剩余门槛
 
 - [工作流](../../../.github/workflows/translation-profiles.yml) 分别运行 `ProfileCoreSelfTest`、`NativeStorageSelfTest`、`NativeTransactionSelfTest` 与新增的 `TranslationExecutionSelfTest`，保留真实失败退出码与日志构件。

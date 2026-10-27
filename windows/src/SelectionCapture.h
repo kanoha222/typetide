@@ -20,6 +20,8 @@ struct Capture {
     /// 选区屏幕矩形（物理像素）；hasAnchor=false 时无效
     RECT anchor{};
     bool hasAnchor = false;
+    /// 取词时的前台窗口：替换只粘贴回它（换了前台窗口就放弃）
+    HWND window = nullptr;
 };
 
 /// 读模式 UIA 取词（仅 UIA，不动剪贴板；主线程）。

@@ -3,6 +3,7 @@
 #include "LocalDiagnostics.h"
 #include "OllamaModels.h"
 #include "PopupWindow.h"
+#include "ProfileBinding.h"
 #include "SelectionIcon.h"
 #include "SelectionMonitor.h"
 #include "Settings.h"
@@ -13,6 +14,7 @@
 #include "Util.h"
 #include <shellapi.h>
 #include <psapi.h>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -62,6 +64,9 @@ bool App::init(HINSTANCE inst) {
     tray_.onOpenSettings = [this] { openSettings(); };
     tray_.onOpenReleases = [] { updatechecker::OpenReleasesPage(); };
     tray_.onQuit = [this] { quit(); };
+    tray_.onBindProfile = [this](ProfileEntry entry, const std::string& profileId) {
+        bindProfile(entry, profileId);
+    };
     tray_.add(hwnd_, WM_APP_TRAY);
     // explorer.exe 重启后托盘图标会消失，收到 TaskbarCreated 时重挂
     taskbarCreatedMsg_ = RegisterWindowMessageW(L"TaskbarCreated");
@@ -162,7 +167,7 @@ void App::openSettings() {
 }
 
 void App::quit() {
-    PopupWindow::shared().close();
+    PopupWindow::shared().close(session::CloseReason::AppExit);
     SelectionIcon::shared().hide();
     SelectionMonitor::shared().stop();
     translator::CancelAll();
@@ -266,6 +271,7 @@ void App::captureFallbackAsync(UINT message, Trigger trigger) {
         captured->cap.text = *copied;
         captured->cap.anchor = capture::CursorAnchor();
         captured->cap.hasAnchor = true;
+        captured->cap.window = GetForegroundWindow();  // 刚收到 Ctrl+C 的窗口即粘贴目标
         captured->trigger = trigger;
         if (!PostMessageW(hwnd, message, 0, (LPARAM)captured)) delete captured;
     }).detach();
@@ -282,12 +288,14 @@ bool App::rejectIfTooLong(const capture::Capture& cap, const execution::ContextP
     return true;
 }
 
-void App::beginUserTranslation() {
-    ++generation_;
-    translator::Cancel(currentReq_);
-    translator::Cancel(rewriteReq_);
-    currentReq_ = 0;  // 被取消的流不再回调；晚到的 delta 也不再匹配
-    rewriteReq_ = 0;
+uint64_t App::beginUserTranslation() {
+    session::Ledger::Started started = ledger_.beginSession();
+    cancelRequests(started.cancel);
+    return started.session;
+}
+
+void App::cancelRequests(const std::vector<uint64_t>& requestIds) {
+    for (uint64_t id : requestIds) translator::Cancel(id);
 }
 
 // ---------- 读·弹窗会话（含改写预览）----------
@@ -303,55 +311,71 @@ void App::openPopupSession(const capture::Capture& cap, execution::ContextPtr co
         showErrorPopup(cap.text, Language::English, anchor, kNoProfileError);
         return;
     }
-    beginUserTranslation();
+    const uint64_t sessionId = beginUserTranslation();
     const Language target =
         execution::ResolveActionDirection(context->profile, context->action, cap.text).target;
+    popupSession_ = sessionId;
     sessionContext_ = std::move(context);
     sessionText_ = cap.text;
+    sessionWindow_ = cap.window;
     currentReplaceSelectAll_ = replaceSelectAll;
 
+    // show() 先以 Superseded 关掉旧弹窗；旧会话此时已过期，它的关闭不会影响新会话。
+    PopupWindow::shared().show(cap.text, target, anchor, /*showReplace=*/true);
+    installPopupHandlers(sessionId);
+    startStream(std::nullopt);
+}
+
+void App::installPopupHandlers(uint64_t sessionId) {
     PopupWindow& popup = PopupWindow::shared();
-    popup.show(cap.text, target, anchor, /*showReplace=*/true);
-    popup.onReplace = [this] {
-        // custom 原样交付（缩进/制表符/结尾换行），preset 去首尾空白；空结果不替换
-        std::optional<std::wstring> text =
-            execution::DeliveredOutput(sessionContext_->profile, PopupWindow::shared().translation());
-        if (!text) return;
-        bool selectAll = currentReplaceSelectAll_;
-        PopupWindow::shared().close();
-        replacer::ReplaceAsync(std::move(*text), selectAll);
-    };
+    popup.onReplace = [this, sessionId] { onPopupReplace(sessionId); };
     popup.onRetarget = [this](Language newTarget) {
-        translator::Cancel(currentReq_);
         PopupWindow& p = PopupWindow::shared();
         p.setTarget(newTarget);
         p.resetForRetranslate();
-        startStream(newTarget);  // 同一冻结 profile，只换目标语言
+        startStream(newTarget);  // 同一冻结 profile，只换目标语言；上一次尝试被取消
     };
     popup.onRetry = [this] {
         PopupWindow& p = PopupWindow::shared();
         p.resetForRetranslate();
         startStream(p.target());
     };
-    popup.onClosed = [this] { translator::Cancel(currentReq_); };
+    popup.onClosed = [this, sessionId](session::CloseReason reason) {
+        cancelRequests(ledger_.close(sessionId, reason));  // 只影响这个弹窗自己的会话
+    };
+}
 
-    startStream(std::nullopt);
+void App::onPopupReplace(uint64_t sessionId) {
+    if (sessionId != popupSession_ || !sessionContext_) return;
+    // custom 原样交付（缩进/制表符/结尾换行），preset 去首尾空白；空结果不替换
+    std::optional<std::wstring> text =
+        execution::DeliveredOutput(sessionContext_->profile, PopupWindow::shared().translation());
+    if (!text) return;
+    session::PasteGuard guard =
+        ledger_.pasteGuard(sessionId, reinterpret_cast<std::uintptr_t>(sessionWindow_));
+    const bool selectAll = currentReplaceSelectAll_;
+    PopupWindow::shared().close(session::CloseReason::ReplaceCommit);
+    replacer::ReplaceAsync(std::move(*text), selectAll, std::move(guard));
 }
 
 void App::startStream(std::optional<Language> targetOverride) {
+    session::Ledger::Attempt attempt = ledger_.beginAttempt(popupSession_);
+    cancelRequests(attempt.cancel);
+    if (!ledger_.accepts(attempt.ticket)) return;  // 会话已关闭或已被取代
     HWND hwnd = hwnd_;
-    currentReq_ = translator::Stream(
+    const session::Ticket ticket = attempt.ticket;
+    // 回调只带创建时的 ticket；同步的缓存命中也只是 PostMessage，晚于 attachRequest 处理。
+    const uint64_t requestId = translator::Stream(
         sessionContext_, sessionText_, targetOverride,
-        [hwnd](uint64_t id, const std::wstring& delta) {
-            auto* payload = new std::wstring(delta);
-            if (!PostMessageW(hwnd, WM_APP_TR_DELTA, (WPARAM)id, (LPARAM)payload))
-                delete payload;
+        [hwnd, ticket](uint64_t, const std::wstring& delta) {
+            auto* payload = new DeltaMsg{ticket, delta};
+            if (!PostMessageW(hwnd, WM_APP_TR_DELTA, 0, (LPARAM)payload)) delete payload;
         },
-        [hwnd](uint64_t id, bool ok, const std::wstring& error) {
-            auto* payload = new DoneMsg{ok, error};
-            if (!PostMessageW(hwnd, WM_APP_TR_DONE, (WPARAM)id, (LPARAM)payload))
-                delete payload;
+        [hwnd, ticket](uint64_t, bool ok, const std::wstring& error) {
+            auto* payload = new DoneMsg{ticket, ok, error};
+            if (!PostMessageW(hwnd, WM_APP_TR_DONE, 0, (LPARAM)payload)) delete payload;
         });
+    ledger_.attachRequest(ticket, requestId);
 }
 
 // ---------- 写·输入改写 ----------
@@ -373,9 +397,10 @@ void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr con
         return;
     }
     // 旧弹窗会话被取代：关掉它，免得停在半截译文上还能点 Replace
-    PopupWindow::shared().close();
-    beginUserTranslation();
-    // 直接替换：异步流结束后回主线程粘贴；期间若有新的用户翻译则丢弃本结果。
+    PopupWindow::shared().close(session::CloseReason::Superseded);
+    const uint64_t sessionId = beginUserTranslation();
+    const session::Ticket ticket = ledger_.beginAttempt(sessionId).ticket;
+    // 直接替换：异步流结束后回主线程，确认会话仍是最新再交给 replacer（它在按键前还会再查）。
     const Language target =
         execution::ResolveActionDirection(context->profile, context->action, cap.text).target;
     struct RewriteStreamState {
@@ -384,33 +409,34 @@ void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr con
     };
     auto state = std::make_shared<RewriteStreamState>();
     HWND hwnd = hwnd_;
-    const uint64_t generation = generation_;
     const bool wholeField = cap.isWholeField;
+    const HWND window = cap.window;
     const std::wstring original = cap.text;
-    rewriteReq_ = translator::Stream(
+    const uint64_t requestId = translator::Stream(
         context, cap.text, std::nullopt,
         [state](uint64_t, const std::wstring& delta) {
             std::lock_guard lock(state->mutex);
             state->result += delta;
         },
-        [hwnd, state, context, generation, wholeField, anchor, original, target](
+        [hwnd, state, context, ticket, wholeField, anchor, window, original, target](
             uint64_t, bool ok, const std::wstring& error) {
             std::lock_guard lock(state->mutex);
             std::optional<std::wstring> text =
                 ok ? execution::DeliveredOutput(context->profile, state->result) : std::nullopt;
             auto* msg = new RewriteResult{
+                ticket,
                 text.has_value(),
                 text ? std::move(*text) : std::wstring(),
                 text ? std::wstring() : (ok ? std::wstring(L"Empty translation") : error),
                 wholeField,
                 anchor,
-                true,
+                window,
                 original,
                 target,
-                generation,
             };
             if (!PostMessageW(hwnd, WM_APP_REWRITE_DONE, 0, (LPARAM)msg)) delete msg;
         });
+    ledger_.attachRequest(ticket, requestId);
 }
 
 void App::showErrorPopup(const std::wstring& original, Language target, RECT anchor, const std::wstring& error) {
@@ -421,6 +447,15 @@ void App::showErrorPopup(const std::wstring& original, Language target, RECT anc
     popup.onRetry = nullptr;
     popup.onClosed = nullptr;
     popup.setError(error);
+}
+
+// ---------- 托盘绑定 ----------
+
+void App::bindProfile(ProfileEntry entry, const std::string& profileId) {
+    std::string error;
+    if (profilebinding::Commit(Settings::shared(), entry, profileId, &error)) return;  // 只影响之后的触发
+    const std::wstring message = L"The profile binding could not be changed.\n\n" + util::Widen(error);
+    MessageBoxW(nullptr, message.c_str(), L"TypeTide", MB_OK | MB_ICONWARNING);
 }
 
 // ---------- 消息处理 ----------
@@ -439,9 +474,14 @@ void App::onTrayEvent(UINT event) {
         openSettings();
 }
 
-void App::onTranslationDone(uint64_t reqId, const DoneMsg& done) {
+void App::onDelta(const DeltaMsg& msg) {
     PopupWindow& popup = PopupWindow::shared();
-    if (reqId != currentReq_ || !popup.isVisible()) return;
+    if (ledger_.accepts(msg.ticket) && popup.isVisible()) popup.appendDelta(msg.delta);
+}
+
+void App::onTranslationDone(const DoneMsg& done) {
+    PopupWindow& popup = PopupWindow::shared();
+    if (!ledger_.accepts(done.ticket) || !popup.isVisible()) return;
     if (!done.ok)
         popup.setError(done.error);
     else if (!sessionContext_ || !execution::DeliveredOutput(sessionContext_->profile, popup.translation()))
@@ -451,11 +491,14 @@ void App::onTranslationDone(uint64_t reqId, const DoneMsg& done) {
 }
 
 void App::onRewriteDone(RewriteResult& result) {
-    if (result.generation != generation_) return;  // 已有更新的用户翻译：不再粘贴
-    if (result.ok)
-        replacer::ReplaceAsync(std::move(result.text), result.isWholeField);
-    else
+    if (!ledger_.accepts(result.ticket)) return;  // 已有更新的用户翻译：不再粘贴
+    if (result.ok) {
+        replacer::ReplaceAsync(std::move(result.text), result.isWholeField,
+                               ledger_.pasteGuard(result.ticket.session,
+                                                  reinterpret_cast<std::uintptr_t>(result.window)));
+    } else {
         showErrorPopup(result.original, result.target, result.anchor, result.error);
+    }
 }
 
 void App::onCaptured(UINT message, CapturedSelection& captured) {
@@ -474,14 +517,11 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_TRAY:
         onTrayEvent(LOWORD(lp));
         return 0;
-    case WM_APP_TR_DELTA: {
-        std::unique_ptr<std::wstring> delta((std::wstring*)lp);
-        if ((uint64_t)wp == currentReq_ && PopupWindow::shared().isVisible())
-            PopupWindow::shared().appendDelta(*delta);
+    case WM_APP_TR_DELTA:
+        onDelta(*std::unique_ptr<DeltaMsg>((DeltaMsg*)lp));
         return 0;
-    }
     case WM_APP_TR_DONE:
-        onTranslationDone((uint64_t)wp, *std::unique_ptr<DoneMsg>((DoneMsg*)lp));
+        onTranslationDone(*std::unique_ptr<DoneMsg>((DoneMsg*)lp));
         return 0;
     case WM_APP_REWRITE_DONE:
         onRewriteDone(*std::unique_ptr<RewriteResult>((RewriteResult*)lp));

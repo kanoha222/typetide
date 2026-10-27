@@ -5,6 +5,7 @@
 #pragma once
 #include <windows.h>
 #include "Language.h"
+#include "TranslationSession.h"
 #include <functional>
 #include <string>
 
@@ -24,7 +25,8 @@ public:
     /// 重新进入 loading（重定向语言后重新翻译）
     void resetForRetranslate();
 
-    void close();
+    /// 关闭弹窗；reason 交给 onClosed（Esc / 点外部 / 关闭按钮都是 Dismiss）
+    void close(session::CloseReason reason = session::CloseReason::Dismiss);
     bool isVisible() const { return hwnd_ != nullptr; }
     const std::wstring& translation() const { return translation_; }
     Language target() const { return target_; }
@@ -35,8 +37,8 @@ public:
     std::function<void(Language)> onRetarget;
     /// 错误状态下重试当前请求
     std::function<void()> onRetry;
-    /// 弹窗关闭（App 取消未完成的流）
-    std::function<void()> onClosed;
+    /// 弹窗关闭及原因（App 据此只处理这个弹窗自己的会话）
+    std::function<void(session::CloseReason)> onClosed;
 
 private:
     PopupWindow() = default;

@@ -3,6 +3,7 @@
 //
 #pragma once
 #include <windows.h>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -25,5 +26,10 @@ struct Snapshot {
 
 Snapshot Take();
 void Restore(const Snapshot& snap);
+
+/// Serializes whole clipboard transactions (fallback copy capture, paste replace) so one
+/// never snapshots or restores in the middle of the other. Worker threads only: the UI
+/// thread must never wait on it.
+std::mutex& TransactionMutex();
 
 } // namespace clipboard

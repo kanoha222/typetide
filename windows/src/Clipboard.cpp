@@ -54,6 +54,11 @@ Snapshot Take() {
     return Snapshot{GetText()};
 }
 
+std::mutex& TransactionMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 void Restore(const Snapshot& snap) {
     if (snap.text) {
         SetText(*snap.text);

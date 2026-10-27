@@ -19,7 +19,9 @@ enum class ReplaceOutcome {
 };
 
 /// 用译文替换（异步，立即返回）。selectAll=true 时先 Ctrl+A 全选（整框改写）。
-void ReplaceAsync(std::wstring text, bool selectAll);
+/// `guard` is checked before the clipboard is touched and before each injected key: a newer
+/// translation or a different foreground window aborts the paste and keeps the clipboard.
+void ReplaceAsync(std::wstring text, bool selectAll, session::PasteGuard guard);
 
 /// Synchronous worker body for the runtime self-test. Blocks; never call on the UI thread.
 ReplaceOutcome ReplaceForTesting(const std::wstring& text, bool selectAll, const session::PasteGuard& guard);
