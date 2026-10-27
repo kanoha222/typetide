@@ -1,5 +1,6 @@
 #include "../src/ProfileEditor.h"
 #include "TranslationExecutionSupport.h"
+#include <cstddef>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -86,8 +87,10 @@ void TestAddAndDuplicate() {
                                        profileeditor::kCopySuffix &&
               editor.current().systemPrompt == "Keep me" && editor.current().promptMode == PromptMode::Custom,
           "a duplicate copies every field and marks its name");
-    while (editor.draft().profiles.size() < profiles::MaxProfiles)
-        editor.add("fill-" + std::to_string(editor.draft().profiles.size()));
+    // Bounded: a non-growing add() must fail the check below, never hang the run.
+    for (std::size_t i = 0; i < profiles::MaxProfiles && editor.draft().profiles.size() < profiles::MaxProfiles; ++i)
+        editor.add("fill-" + std::to_string(i));
+    Check(editor.draft().profiles.size() == profiles::MaxProfiles, "add fills up to the profile limit");
     Check(!editor.add("one-too-many") && !editor.duplicate("one-too-many"), "the profile limit is enforced");
 }
 
