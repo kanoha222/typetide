@@ -484,9 +484,9 @@ void appendProfile(bool copy) {
 }
 
 std::optional<std::string> chooseReplacement() {
+    // The menu lists only choices, so the first Down arrow lands on a replacement.
+    setStatus(L"This profile is in use. Choose the profile its bindings move to.");
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"This profile is in use. Move its bindings to:");
-    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     const std::vector<TranslationProfile>& profiles = g.editor->draft().profiles;
     for (UINT i = 0; i < profiles.size(); ++i)
         if (i != g.editor->selected())

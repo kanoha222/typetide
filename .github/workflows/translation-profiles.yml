@@ -321,7 +321,7 @@ jobs:
           retention-days: 7
 
   profile-editor-uia:
-    name: Profile editor UIA test
+    name: Profile editor end-to-end test
     runs-on: windows-latest
     timeout-minutes: 20
     defaults:
@@ -360,19 +360,19 @@ jobs:
               Tee-Object -FilePath "$env:EDITOR_LOG_DIR/build.log"
           exit $LASTEXITCODE
 
-      - name: Drive the profile editor through UI Automation (failures are not masked)
+      - name: Drive the profile editor with window messages (failures are not masked)
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/scripts/test-profiles-e2e.ps1 `
               -Exe "$env:EDITOR_BUILD_DIR/Release/TypeTide.exe" -DataDir "$env:EDITOR_DATA_DIR" 2>&1 |
-              Tee-Object -FilePath "$env:EDITOR_LOG_DIR/uia.log"
+              Tee-Object -FilePath "$env:EDITOR_LOG_DIR/editor-e2e.log"
           exit $LASTEXITCODE
 
-      - name: Preserve configure, build and UIA logs
+      - name: Preserve configure, build and editor test logs
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: profile-editor-uia-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          name: profile-editor-e2e-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.EDITOR_LOG_DIR }}/*
           if-no-files-found: warn
           retention-days: 7
