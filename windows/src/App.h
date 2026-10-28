@@ -9,6 +9,7 @@
 #pragma once
 #include <windows.h>
 #include "Language.h"
+#include "OllamaModels.h"
 #include "SelectionCapture.h"
 #include "TranslationExecution.h"
 #include "TranslationSession.h"
@@ -26,7 +27,7 @@ constexpr UINT WM_APP_TR_DONE = WM_APP + 3;     // lParam=DoneMsg*
 constexpr UINT WM_APP_REWRITE_DONE = WM_APP + 4;// lParam=RewriteResult*
 constexpr UINT WM_APP_UPDATE = WM_APP + 5;      // 有新版本
 constexpr UINT WM_APP_OPEN_SETTINGS = WM_APP + 6;
-constexpr UINT WM_APP_MODELS = WM_APP + 7;          // lParam=std::vector<std::wstring>*（接收方释放）
+constexpr UINT WM_APP_MODELS = WM_APP + 7;          // lParam=ollamamodels::Discovery*（接收方释放）
 constexpr UINT WM_APP_READ_CAPTURED = WM_APP + 8;   // lParam=CapturedSelection*（接收方释放）
 constexpr UINT WM_APP_REWRITE_CAPTURED = WM_APP + 9;// 同上
 
@@ -99,7 +100,7 @@ private:
     void onTranslationDone(const DoneMsg& done);
     void onRewriteDone(RewriteResult& result);
     void onCaptured(UINT message, CapturedSelection& captured);
-    void onModelsListed(const std::vector<std::wstring>& models);
+    void onModelsListed(const ollamamodels::Discovery& discovery);
     void onTrayEvent(UINT event);
     void onHotkey(WPARAM id);
     void bindProfile(ProfileEntry entry, const std::string& profileId);

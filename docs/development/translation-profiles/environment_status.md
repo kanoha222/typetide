@@ -40,8 +40,8 @@
 - `Translator`：主线程 `execution::Prepare` 决定 URL/请求体/缓存身份，失败给出固定文案（不含 URL/密钥/提示词）；工作线程只发送冻结的请求，Ollama 400 时发送预先构造的 retry body。缓存键为 `cacheIdentity`，缓存与交付使用 `execution::DeliveredOutput`：custom 原样（缩进/制表符/结尾换行），preset 保留旧的去首尾空白。旧的按全局字段拼请求的 `Stream/TranslateFully(TranslationRequest)` 已删除；`SystemPrompt/PlainPrompt` 转发到唯一的 preset 实现。
 - `Http.cpp`：改用共享 `CrackUrl`（去掉 256/2048 固定缓冲，保留 query），provider POST 设置 `WINHTTP_OPTION_REDIRECT_POLICY_NEVER`，3xx 作为错误报告而不跟随。`Get`（更新检查、Ollama 模型列表）保持跟随重定向。
 - App：新的用户翻译使上一次失效（取消其流，丢弃尚未粘贴的直接替换结果）；直接替换会关闭被取代的弹窗，避免停在半截译文上还能点 Replace；直接替换与弹窗会话分开跟踪，关闭旧弹窗不会取消新的直接替换。Ollama 预加载只预热已提交 profile 实际绑定的模型（去重）。完整的弹窗关闭原因与 TextReplacer 最终边界守卫属于 Phase 3，尚未实现。
-- 连接测试（设置窗口 Backend 页）仍按该页正在编辑的 backend/model/连接用固定合成句测试，不使用 profile 或选中文字。
-- **过渡期（用户选择）**：旧设置窗口的 backend/model/语言/方向/风格控件已不影响翻译，连接字段（Ollama host/port、API base URL/key）仍有效；profile 编辑器（Phase 4）完成前需编辑 settings.json 修改 profile 与绑定。
+- 连接测试（设置窗口 Translation 页）按已绑定 profile 的 backend + 模型与已提交的连接用固定合成句测试，不使用 profile 提示词、剪贴板或选中文字（Phase 4 第 3 步）。
+- **过渡期（用户选择，已结束）**：旧设置窗口的 backend/model/语言/方向/风格控件不再影响翻译；profile 编辑器（`20abd53` GREEN）已可编辑 profile 与绑定，第 3 步删除这些旧控件。
 - 验证：`TypeTide.exe --selftest-runtime`（job `translation-runtime`）用真实 Translator + WinHTTP 对本机 mock（`windows/scripts/mock-openai.ps1`，只记录请求路径/请求体/是否带 Authorization，不记录其值）检查线上请求体与 Prepare 一致、custom 原样输出、think 重试、缓存与 epoch 隔离、拒绝重定向、拒绝远程明文 HTTP、超过 2048 字符的 URL 及已提交设置到快捷键的路径。
 
 ## Phase 3：会话生命周期与托盘绑定（RED `6e7c858`，GREEN `3de750f`）
@@ -56,8 +56,9 @@
 ## Phase 4：原生 profile 编辑器（进行中）
 
 - 第 1 步纯函数编辑器模型：RED `d6e3f55`（29 failure(s)），实现 `df0b8b3`，在 `209a345` 的纯函数 job 实证 GREEN。
-- 第 2 步原生窗口：编辑器端到端 job 在 `209a345` 实证行为 RED（[job `122003876635`](https://github.com/kanoha222/typetide/actions/runs/40448037403/job/122003876635)：build 成功，唯一失败 “the profile editor opens”）。实现：单实例 `TranslationProfilesWindow`（托盘“Manage profiles…”与 `--open-profiles` 打开），左侧列表 + 新增/复制/删除，右侧名称、语言对、方向、backend/模型、本地/网络/云端路由说明、preset/custom 切换、多行提示词与变量说明、有效请求预览，底部三个入口绑定、固定文本测试、保存/关闭。草稿与运行时隔离：保存经 `profilebinding::CommitConfiguration`（以已提交值为基础，不提交也不丢弃其他未保存 draft；编辑器传入基线，若 profile 在别处被改则拒绝保存并说明）。关闭/切换时有未保存修改会询问保存/放弃/取消；删除被绑定的 profile 必须选择替换，最后一个不可删；悬空绑定在打开时提示。超长粘贴导致提示词被截断后为粘滞拒绝（必须清空重填），无法无损编辑的提示词禁用编辑并原样保留；固定文本测试只用合成句，结果按窗口与测试代次丢弃过期结果。GREEN 待观察。`--selftest-runtime` 新增的编辑器保存冲突用例与实现同时编写，未先观察到 RED。端到端测试方式：在 `0d32f56`/`e23cef0` 上，Windows PowerShell 5.1 的托管 UI Automation 在 CI 上把这些 Win32 控件全部识别为通用 Pane（无列表项、无 Invoke/Value/SelectionItem 模式），因此 `test-profiles-e2e.ps1` 改为与仓库其他 E2E 脚本相同的窗口消息驱动（WM_COMMAND、WM_SETTEXT/WM_GETTEXT、LB_GETCOUNT、向弹出菜单投递方向键/回车），job 更名为 “Profile editor end-to-end test”。这不是 UIA 测试；读屏/UIA 可访问性仍未验证。
-- 第 3 步（设置窗口改为摘要与入口、模型不静默替换、发现/健康检查版本守卫）待做。
+- 第 2 步原生窗口：编辑器端到端 job 在 `209a345` 实证行为 RED（[job `122003876635`](https://github.com/kanoha222/typetide/actions/runs/40448037403/job/122003876635)：build 成功，唯一失败 “the profile editor opens”）。实现：单实例 `TranslationProfilesWindow`（托盘“Manage profiles…”与 `--open-profiles` 打开），左侧列表 + 新增/复制/删除，右侧名称、语言对、方向、backend/模型、本地/网络/云端路由说明、preset/custom 切换、多行提示词与变量说明、有效请求预览，底部三个入口绑定、固定文本测试、保存/关闭。草稿与运行时隔离：保存经 `profilebinding::CommitConfiguration`（以已提交值为基础，不提交也不丢弃其他未保存 draft；编辑器传入基线，若 profile 在别处被改则拒绝保存并说明）。关闭/切换时有未保存修改会询问保存/放弃/取消；删除被绑定的 profile 必须选择替换，最后一个不可删；悬空绑定在打开时提示。超长粘贴导致提示词被截断后为粘滞拒绝（必须清空重填），无法无损编辑的提示词禁用编辑并原样保留；固定文本测试只用合成句，结果按窗口与测试代次丢弃过期结果。[实证 GREEN](https://github.com/kanoha222/typetide/actions/runs/40487268849/job/122132082264)（commit `20abd53`，22 项检查全部通过，9 个 check-run 全部 success；`a2b44b0` 的唯一失败是测试脚本按空标题找窗口——PowerShell 把 `$null` 传成空串——已在测试中修正，编辑器本身未改）。`--selftest-runtime` 新增的编辑器保存冲突用例与实现同时编写，未先观察到 RED。端到端测试方式：在 `0d32f56`/`e23cef0` 上，Windows PowerShell 5.1 的托管 UI Automation 在 CI 上把这些 Win32 控件全部识别为通用 Pane（无列表项、无 Invoke/Value/SelectionItem 模式），因此 `test-profiles-e2e.ps1` 改为与仓库其他 E2E 脚本相同的窗口消息驱动（WM_COMMAND、WM_SETTEXT/WM_GETTEXT、LB_GETCOUNT、向弹出菜单投递方向键/回车），job 更名为 “Profile editor end-to-end test”。这不是 UIA 测试；读屏/UIA 可访问性仍未验证。
+- 第 3 步（设置窗口摘要与入口、缺失模型不替换、发现/连接测试版本守卫）：[实证行为 RED](https://github.com/kanoha222/typetide/actions/runs/40642378955)，commit `a3f8ccd`（`7a60723` 先推送，因测试里两个字符串字面量断行导致主程序编译失败，只有纯函数 job 是有效 RED；修正测试后重跑），build 成功：纯函数 [job `122663245042`](https://github.com/kanoha222/typetide/actions/runs/40642378955/job/122663245042) 18 failure(s)、运行时 mock [job `122663245027`](https://github.com/kanoha222/typetide/actions/runs/40642378955/job/122663245027) 11 failure(s)（发现结果替换了缺失模型并保存、预加载了缺失模型、连接测试未实现）、编辑器端到端 [job `122663245053`](https://github.com/kanoha222/typetide/actions/runs/40642378955/job/122663245053) 17 failure(s)（无摘要、旧控件仍在、无管理入口）。GREEN 待观察。
+- 第 3 步实现：设置窗口 Translation 页改为三个入口的摘要（profile、backend 与模型、本地/网络/云端、模型未安装提示、连接测试结果）与 “Manage profiles…”，保留内置模型下载、Ollama 地址与已装模型、云端 provider/Base URL/API key；Languages 页改为各入口的语言/方向/风格摘要；Behavior 页移除风格选择；快捷键页改称 Shortcut 1/2。旧的 backend 单选、Ollama/API 模型、语言/方向/风格控件已删除（字段仍保留在 settings.json 供迁移）。`ollamamodels::ApplyResolvedModels`/`EnsureValidDefault` 已删除：发现结果只用于预加载已绑定且已安装的模型，从不替换或保存；预加载由代次计数取消过期的批次。“Test bound models” 对每个已绑定的 backend + 模型各测一次（`translator::CheckConnectionAsync`，固定合成句、每次唯一、不命中缓存）。发现结果按 Ollama 端点版本、连接测试按连接 epoch 与绑定集合经 `profilestatus::ResultGuard` 丢弃过期结果。编辑器保存与托盘绑定后通知设置窗口刷新。
 
 ## 验证入口与剩余门槛
 
@@ -68,7 +69,7 @@
 
 ## 集成门槛（待办，非已完成功能）
 
-- 公开 `Settings` 字段仍是旧版可编辑 draft。翻译执行已改为冻结 committed snapshot（不再读 draft，GREEN `54f0e9a`）；仅设置窗口的连接测试仍有意读取正在编辑的值。保存失败时可能保留未提交 draft，与旧行为一致。
+- 公开 `Settings` 字段仍是旧版可编辑 draft。翻译执行已改为冻结 committed snapshot（不再读 draft，GREEN `54f0e9a`）；设置窗口的连接测试也只用已提交的值。保存失败时可能保留未提交 draft，与旧行为一致。
 - 功能验收前，UI 必须使用 candidate commit 并在提交后重新同步控件、处理 error + warning / 只读状态。
 - `.tmp` 的 `CREATE_NEW` 冲突保护未知文件，但需要明确的恢复 UX，不能静默删除非自有临时文件。
 - `TYPETIDE_DATA_DIR` 下的进程内存凭据仅用于测试，不是持久化的生产路径。

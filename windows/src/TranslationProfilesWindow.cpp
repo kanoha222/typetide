@@ -1,8 +1,9 @@
 #include "TranslationProfilesWindow.h"
-#include "EndpointPolicy.h"
 #include "ProfileBinding.h"
 #include "ProfileEditor.h"
+#include "ProfileStatus.h"
 #include "Settings.h"
+#include "SettingsWindow.h"
 #include "Translator.h"
 #include "Util.h"
 #include "resource.h"
@@ -278,17 +279,21 @@ std::wstring previewText() {
            L"\r\n\r\nUser message: the selected text, unchanged.";
 }
 
+// Same classification as the Settings window's summaries, on the committed connection.
 std::wstring routeText(const TranslationProfile& profile) {
-    switch (profile.backend) {
-    case TranslationBackend::BuiltIn:
-        return L"Local: runs with the built-in model on this PC.";
-    case TranslationBackend::Ollama: {
-        const std::wstring host = util::Widen(Settings::shared().committedData().ollamaHost);
-        return execution::ClassifyEndpoint(host).kind == execution::EndpointKind::LoopbackHttp
-                   ? L"Local: runs on Ollama on this PC."
-                   : L"Network: selected text is sent to the configured Ollama host.";
-    }
-    case TranslationBackend::OpenAI:
+    const SettingsData& committed = Settings::shared().committedData();
+    execution::ConnectionSnapshot connection;
+    connection.ollamaHost = committed.ollamaHost;
+    connection.openAIBaseURL = committed.openAIBaseURL;
+    const profilestatus::Route route = profilestatus::RouteOf(profile, connection);
+    switch (route) {
+    case profilestatus::Route::Local:
+        return profile.backend == TranslationBackend::BuiltIn ? L"Local: runs with the built-in model on this PC."
+             : profile.backend == TranslationBackend::Ollama  ? L"Local: runs on Ollama on this PC."
+                                                              : L"Local: runs on the API server on this PC.";
+    case profilestatus::Route::Network:
+        return L"Network: selected text is sent to the configured Ollama host.";
+    case profilestatus::Route::Cloud:
         return L"Cloud: selected text is sent to the configured API endpoint.";
     }
     return {};
@@ -428,6 +433,7 @@ bool save() {
     reloadAll();
     const std::string& warning = settings.storageWarning();
     setStatus(warning.empty() ? std::wstring(L"Saved.") : L"Saved. " + util::Widen(warning));
+    SettingsWindow::profilesChanged();
     return true;
 }
 

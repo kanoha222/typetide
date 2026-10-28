@@ -53,7 +53,7 @@ No browser tab and no copy-paste loop. On Apple Silicon Macs, translation defaul
 - **Works in every app** — uses the Accessibility API (macOS) / UI Automation (Windows) to read the selection, with a clipboard-copy fallback for Electron/web apps, so it works even where text APIs don’t. The original clipboard is always restored.
 - **Undo-safe replacement** — replacements are pasted, preserving each app’s native undo stack.
 - **Local or cloud** — pluggable backends: **Built-in MLX** (Apple Silicon Mac), **Ollama** (offline, private), or any **OpenAI-compatible** API (`/chat/completions`, streaming). Switch in Settings.
-- **Model picker** — Settings lists your installed Ollama models, recommends a comfortable size from physical memory, and auto-selects an installed model when the configured one is missing. Thinking models (qwen3 family, …) are handled — hidden reasoning is disabled so translations stay instant.
+- **Model picker** — Settings lists your installed Ollama models, recommends a comfortable size from physical memory, and on macOS auto-selects an installed model when the configured one is missing (on Windows each translation profile names its own model, and a missing one is flagged in Settings, never swapped). Thinking models (qwen3 family, …) are handled — hidden reasoning is disabled so translations stay instant.
 - **Styles** — the built-in model supports Faithful translation. Formal, Casual, and Polished rewriting require Ollama or an API backend.
 - **Shortcut actions** — each of the two global shortcuts can independently use smart direction or a fixed native/foreign target, then show a popup or replace in place.
 - **Built-in checks** — first-run setup verifies permissions, backend translation, and shortcut registration. The backend check uses fixed synthetic text, never the clipboard.
@@ -103,7 +103,7 @@ ollama serve             # usually already running as a service
 OpenAI, OpenRouter, and DeepSeek plus a custom OpenAI-compatible endpoint; API keys are
 kept in Windows Credential Manager rather than the settings JSON.
 
-TypeTide lists your installed models in **Settings → Backend** and auto-picks an installed one if the configured model is missing — pulling *any* chat model is enough to get going.
+TypeTide lists your installed models in **Settings → Backend** (Windows: **Settings → Translation**). On macOS it auto-picks an installed one if the configured model is missing — pulling *any* chat model is enough to get going. On Windows, choose the model per profile in **Settings → Translation → Manage profiles**; a missing model is flagged there, never replaced.
 
 **3. First run**
 
@@ -112,7 +112,7 @@ macOS: allow TypeTide under **System Settings → Privacy & Security → Accessi
 - Select text → **⌥D** (macOS) / **Alt+D** (Windows) → see the translation.
 - Type in your language → **⌥R** / **Alt+R** → it’s rewritten in place.
 
-Shortcuts, their actions, triggers, styles, and languages are all configurable in **Settings**. Either shortcut can be cleared completely; keep at least one configured if you want keyboard triggering. Windows combinations may also include the Windows key. Use **Test Connection** and **Verify Shortcuts** to confirm the complete path before relying on it.
+Shortcuts, their actions, triggers, styles, and languages are all configurable in **Settings**. Either shortcut can be cleared completely; keep at least one configured if you want keyboard triggering. Windows combinations may also include the Windows key. On Windows, languages, direction, style or a custom system prompt, backend and model belong to named translation profiles (**Settings → Translation → Manage profiles**); Shortcut 1, Shortcut 2 and the selection trigger each run the profile bound to them. Use **Test Connection** (Windows: **Test bound models**) and **Verify Shortcuts** to confirm the complete path before relying on it.
 
 ## ⌨️ Default shortcuts
 
@@ -204,7 +204,7 @@ Whichever platform releases first creates the `vX.Y.Z` tag; the other uploads it
 ## 🔧 Troubleshooting
 
 - **Shortcut does nothing** → macOS: confirm Accessibility is granted (Settings → General shows *Granted*) and TypeTide is enabled in the menu bar. Windows: another app may own the hotkey — pick a different one in Settings → Shortcuts.
-- **No translation** → Ollama: is `ollama serve` running and the model installed? (TypeTide auto-picks an installed model if your configured one is missing.) OpenAI: check base URL / key / model.
+- **No translation** → Ollama: is `ollama serve` running and the model installed? (macOS auto-picks an installed model if your configured one is missing; Windows flags a missing model on **Settings → Translation**.) OpenAI: check base URL / key / model.
 - **Translation is very slow on a qwen3-class model** → TypeTide disables hidden “thinking”, preloads the selected model, and keeps it warm for 10 minutes. If it still crawls, the model may be too big for your hardware — try a smaller one from **Settings → Backend**.
 - **Misaligned popup in some apps** → those apps don’t expose text bounds; the popup falls back to the cursor position.
 - **“Can’t be opened on this Mac” on Sequoia or earlier** → TypeTide requires **macOS 26+**. It’s built against the current SwiftUI menu-bar and Settings APIs, and keeping a single modern baseline is what lets a small project stay reliable. Support for older macOS isn’t planned right now.

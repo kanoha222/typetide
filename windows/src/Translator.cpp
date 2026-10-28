@@ -129,6 +129,7 @@ struct Job {
     execution::ContextPtr context;
     execution::PreparedRequest request;
     std::wstring text;
+    bool connectionTest = false;  // never cached, no translation diagnostics
 };
 
 struct StreamOutcome {
@@ -259,14 +260,16 @@ void completeJob(const Job& job, uint64_t id, const StreamOutcome& out, const Do
     const std::optional<std::wstring> delivered =
         out.ok ? execution::DeliveredOutput(job.context->profile, out.full) : std::nullopt;
     if (delivered) {
-        Cache::shared().set(job.request.cacheIdentity, *delivered);
+        if (!job.connectionTest) Cache::shared().set(job.request.cacheIdentity, *delivered);
         onDone(id, true, L"");
-        diagnostics::Record("translation", "success", backend, {}, {}, firstMs, totalMs, chars);
+        if (!job.connectionTest)
+            diagnostics::Record("translation", "success", backend, {}, {}, firstMs, totalMs, chars);
         return;
     }
     onDone(id, false, out.ok ? L"Empty translation" : out.error);
-    diagnostics::Record("translation", "failure", backend, {}, out.ok ? "emptyResponse" : "provider",
-                        firstMs, totalMs, chars);
+    if (!job.connectionTest)
+        diagnostics::Record("translation", "failure", backend, {}, out.ok ? "emptyResponse" : "provider",
+                            firstMs, totalMs, chars);
 }
 
 void runJob(const Job& job, uint64_t id, const std::shared_ptr<std::atomic<bool>>& cancel,
@@ -282,33 +285,27 @@ void runJob(const Job& job, uint64_t id, const std::shared_ptr<std::atomic<bool>
     const int totalMs = elapsedMs(start, Clock::now());
     const int firstMs = firstToken ? elapsedMs(start, *firstToken) : -1;
     if (cancelled) {
-        diagnostics::Record("translation", "cancelled", backendName(job.request.backend), {}, "cancelled",
-                            firstMs, totalMs, (int)job.text.size());
+        if (!job.connectionTest)
+            diagnostics::Record("translation", "cancelled", backendName(job.request.backend), {}, "cancelled",
+                                firstMs, totalMs, (int)job.text.size());
         return;  // 取消的请求不再回调
     }
     completeJob(job, id, out, onDone, firstMs, totalMs);
 }
 
-// The Backend tab's connection test checks the connection and model it is editing, with a
-// fixed synthetic sentence; it never uses a selection or a saved profile.
-execution::ContextPtr healthCheckContext() {
-    const Settings& s = Settings::shared();
-    TranslationProfile probe;
-    probe.id = "connection-test";
-    probe.name = "Connection test";
-    probe.nativeLanguage = Language::Chinese;
-    probe.foreignLanguage = Language::English;
-    probe.direction = TranslationDirection::ForeignToNative;
-    probe.backend = s.backend;
-    probe.model = s.backend == TranslationBackend::Ollama ? s.ollamaModel
-                : s.backend == TranslationBackend::OpenAI ? s.openAIModel : std::string();
-    execution::ConnectionSnapshot connection;
-    connection.connectionEpoch = s.connectionEpoch();
-    connection.ollamaHost = s.ollamaHost;
-    connection.ollamaPort = s.ollamaPort;
-    connection.openAIBaseURL = s.openAIBaseURL;
-    connection.openAIKey = s.openAIKey;
-    return execution::Freeze(std::move(probe), ShortcutAction::SmartPopup, std::move(connection));
+// A connection test checks one explicit backend + model with a fixed synthetic sentence; it
+// never uses a selection, the clipboard or a saved profile's prompt.
+execution::ContextPtr connectionTestContext(const profilestatus::Probe& probe,
+                                            const execution::ConnectionSnapshot& connection) {
+    TranslationProfile test;
+    test.id = "connection-test";
+    test.name = "Connection test";
+    test.nativeLanguage = Language::Chinese;
+    test.foreignLanguage = Language::English;
+    test.direction = TranslationDirection::ForeignToNative;
+    test.backend = probe.backend;
+    test.model = probe.model;
+    return execution::Freeze(std::move(test), ShortcutAction::SmartPopup, connection);
 }
 
 } // namespace
@@ -336,8 +333,13 @@ execution::ContextPtr FreezeEntry(ProfileEntry entry, ShortcutAction action) {
     return execution::FreezeBound(snapshot.profileConfig, entry, action, ConnectionFrom(snapshot));
 }
 
-uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
-                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
+namespace {
+
+// Stream() and connection tests. A connection test skips the cache (read and write) and the
+// translation diagnostics; it reports its own health-check event.
+uint64_t startStream(const execution::ContextPtr& context, const std::wstring& text,
+                     std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone,
+                     bool connectionTest) {
     const uint64_t id = g_nextId.fetch_add(1);
     if (!context) {
         onDone(id, false, L"No translation profile is bound to this action.");
@@ -347,16 +349,19 @@ uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
     const char* provider = backendName(context->profile.backend);
     execution::PreparedRequest request = execution::Prepare(*context, text, targetOverride);
     if (!request.ok()) {
-        diagnostics::Record("translation", "failure", provider, {}, "prepare", -1, 0, (int)text.size());
+        if (!connectionTest)
+            diagnostics::Record("translation", "failure", provider, {}, "prepare", -1, 0, (int)text.size());
         onDone(id, false, execution::PrepareErrorMessage(request.status, request.backend));
         return id;
     }
     // 缓存命中：同步回调全文（缓存里存的已是交付文本）
-    if (auto cached = Cache::shared().get(request.cacheIdentity)) {
-        onDelta(id, *cached);
-        onDone(id, true, L"");
-        diagnostics::Record("translation", "cacheHit", provider, {}, {}, 0, 0, (int)text.size());
-        return id;
+    if (!connectionTest) {
+        if (auto cached = Cache::shared().get(request.cacheIdentity)) {
+            onDelta(id, *cached);
+            onDone(id, true, L"");
+            diagnostics::Record("translation", "cacheHit", provider, {}, {}, 0, 0, (int)text.size());
+            return id;
+        }
     }
 
     auto cancel = std::make_shared<std::atomic<bool>>(false);
@@ -364,11 +369,18 @@ uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
         std::lock_guard lock(g_mu);
         g_active[id] = {cancel};
     }
-    std::thread([job = Job{context, std::move(request), text}, id, cancel, start,
+    std::thread([job = Job{context, std::move(request), text, connectionTest}, id, cancel, start,
                  onDelta = std::move(onDelta), onDone = std::move(onDone)] {
         runJob(job, id, cancel, start, onDelta, onDone);
     }).detach();
     return id;
+}
+
+} // namespace
+
+uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
+                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
+    return startStream(context, text, targetOverride, std::move(onDelta), std::move(onDone), false);
 }
 
 void Cancel(uint64_t reqId) {
@@ -412,20 +424,19 @@ std::optional<std::wstring> TranslateFully(const execution::ContextPtr& context,
     return delivered;
 }
 
-void CheckHealthAsync(std::function<void(HealthCheckResult)> completion) {
+void CheckConnectionAsync(const profilestatus::Probe& probe, const execution::ConnectionSnapshot& connection,
+                          std::function<void(HealthCheckResult)> completion) {
     const auto start = Clock::now();
-    const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
     struct State {
         std::mutex mutex;
         std::wstring full;
         std::optional<Clock::time_point> first;
     };
     auto state = std::make_shared<State>();
-    const execution::ContextPtr context = healthCheckContext();
-    const std::string backend = backendName(context->profile.backend);
-    Stream(
-        context, L"TypeTide health check " + std::to_wstring(stamp), std::nullopt,
+    const std::string backend = backendName(probe.backend);
+    startStream(
+        connectionTestContext(probe, connection), L"TypeTide connection test: the weather is nice today.",
+        std::nullopt,
         [state](uint64_t, const std::wstring& delta) {
             std::lock_guard lock(state->mutex);
             if (!delta.empty() && !state->first) state->first = Clock::now();
@@ -436,23 +447,15 @@ void CheckHealthAsync(std::function<void(HealthCheckResult)> completion) {
             std::lock_guard lock(state->mutex);
             HealthCheckResult result;
             result.ok = success && !util::Trim(state->full).empty();
-            result.message = result.ok ? L"Connected and translated successfully."
-                                       : (message.empty() ? L"No translation returned." : message);
+            result.message = result.ok ? L"Connected" : (message.empty() ? L"No translation returned." : message);
             result.firstTokenMs = state->first ? elapsedMs(start, *state->first) : -1;
             result.totalMs = elapsedMs(start, Clock::now());
             diagnostics::Record("backendHealthCheck", result.ok ? "success" : "failure",
                                 backend, {}, result.ok ? "" : "backend",
                                 result.firstTokenMs, result.totalMs);
             completion(std::move(result));
-        });
-}
-
-void CheckConnectionAsync(const profilestatus::Probe&, const execution::ConnectionSnapshot&,
-                          std::function<void(HealthCheckResult)> completion) {
-    // RED scaffold: not implemented yet.
-    HealthCheckResult result;
-    result.message = L"Connection tests are not implemented yet.";
-    completion(std::move(result));
+        },
+        /*connectionTest=*/true);
 }
 
 void ClearCacheForTesting() {

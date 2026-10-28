@@ -88,9 +88,9 @@ bool App::init(HINSTANCE inst) {
 
     updatechecker::CheckIfDue(hwnd_, WM_APP_UPDATE);
 
-    // 配置的 Ollama 模型未安装时自动挑一个已装的（避免开箱即败）。
-    // 网络在工作线程，Settings 的读写回到主线程（WM_APP_MODELS）。
-    ollamamodels::FetchInstalledAsync(hwnd_, WM_APP_MODELS);
+    // 预加载已绑定且已安装的 Ollama 模型；未安装的模型只在设置里提示，从不自动替换。
+    // 网络在工作线程，结果回到主线程（WM_APP_MODELS）。
+    ollamamodels::FetchInstalledAsync(hwnd_, WM_APP_MODELS, {0, s.connectionEpoch()});
 
     return true;
 }
@@ -136,9 +136,9 @@ void App::applyEnabledState() {
     if ((!ok1 || !ok2) && !hotkeyWarningShown_) {
         hotkeyWarningShown_ = true;
         std::wstring unavailable;
-        if (readConfigured && !ok1) unavailable += L"Translate selection: " + s.readShortcut.displayString();
+        if (readConfigured && !ok1) unavailable += L"Shortcut 1: " + s.readShortcut.displayString();
         if (!ok1 && !ok2) unavailable += L"\n";
-        if (rewriteConfigured && !ok2) unavailable += L"Rewrite & replace: " + s.rewriteShortcut.displayString();
+        if (rewriteConfigured && !ok2) unavailable += L"Shortcut 2: " + s.rewriteShortcut.displayString();
         std::wstring message = L"These shortcuts could not be registered:\n\n" + unavailable +
                                L"\n\nChoose different shortcuts in Settings → Shortcuts.";
         MessageBoxW(nullptr, message.c_str(),
@@ -483,7 +483,10 @@ void App::showErrorPopup(const std::wstring& original, Language target, RECT anc
 
 void App::bindProfile(ProfileEntry entry, const std::string& profileId) {
     std::string error;
-    if (profilebinding::Commit(Settings::shared(), entry, profileId, &error)) return;  // 只影响之后的触发
+    if (profilebinding::Commit(Settings::shared(), entry, profileId, &error)) {  // 只影响之后的触发
+        SettingsWindow::profilesChanged();
+        return;
+    }
     const std::wstring message = L"The profile binding could not be changed.\n\n" + util::Widen(error);
     MessageBoxW(nullptr, message.c_str(), L"TypeTide", MB_OK | MB_ICONWARNING);
 }
@@ -531,10 +534,10 @@ void App::onRewriteDone(RewriteResult& result) {
     }
 }
 
-void App::onModelsListed(const std::vector<std::wstring>& models) {
-    // 工作线程拉回的已装模型列表；Settings 的比对与保存在主线程做
-    ollamamodels::ApplyResolvedModels(models);
-    ollamamodels::PreloadAsync();
+void App::onModelsListed(const ollamamodels::Discovery& discovery) {
+    // 工作线程拉回的已装模型列表：只用于预加载，从不改动或保存设置。连接已变则作废。
+    if (discovery.ok && discovery.ticket.epoch == Settings::shared().connectionEpoch())
+        ollamamodels::OnDiscovered(discovery.models);
 }
 
 void App::onCaptured(UINT message, CapturedSelection& captured) {
@@ -569,7 +572,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
         openSettings();
         return 0;
     case WM_APP_MODELS:
-        onModelsListed(*std::unique_ptr<std::vector<std::wstring>>((std::vector<std::wstring>*)lp));
+        onModelsListed(*std::unique_ptr<ollamamodels::Discovery>((ollamamodels::Discovery*)lp));
         return 0;
     case WM_APP_READ_CAPTURED:
     case WM_APP_REWRITE_CAPTURED:

@@ -67,11 +67,6 @@ uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
 std::optional<std::wstring> TranslateFully(const execution::ContextPtr& context, const std::wstring& text,
                                            std::wstring* error);
 
-/// Async connection test of the Backend tab's current backend/model/connection values, using
-/// fixed synthetic text. Invoke on the main thread so those values are snapshotted safely;
-/// completion runs on a worker thread.
-void CheckHealthAsync(std::function<void(HealthCheckResult)> completion);
-
 /// Async connection test of one explicit backend + model on `connection`, using fixed synthetic
 /// text (never a selection, the clipboard or a profile prompt) and never the cache. Completion
 /// runs on a worker thread, or synchronously when the request cannot be prepared.
