@@ -1,6 +1,7 @@
 ﻿# 翻译后端 mock：
 #   POST */chat/completions → OpenAI 风格 SSE 流式
 #   POST /api/generate      → Ollama 风格 NDJSON 流式
+#   GET  /api/tags          → Ollama 已装模型列表：mock-default:latest、mock-exact:latest
 # 测试用：让 TypeTide 的两种后端都有可对接的本地端点。
 # 用法: .\mock-openai.ps1 [-Port 8199] [-Reply "TRANSLATED_TEXT"] [-RecordFile path]
 #
@@ -49,6 +50,10 @@ while ($listener.IsListening) {
         $hasThink = $null -ne $parsed.PSObject.Properties['think']
     } catch {}
 
+    if ($path -eq "/api/tags") {
+        Send-Text $res 200 '{"models":[{"name":"mock-default:latest"},{"name":"mock-exact:latest"}]}'
+        continue
+    }
     $isOpenAI = $path -like "*/chat/completions"
     $isOllama = $path -eq "/api/generate"
     if (-not ($isOpenAI -or $isOllama)) {

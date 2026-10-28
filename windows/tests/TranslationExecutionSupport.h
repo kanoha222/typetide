@@ -69,5 +69,6 @@ void RunCacheTests();
 void RunRuntimeContractTests();
 void RunSessionTests();
 void RunProfileEditorTests();
+void RunProfileStatusTests();
 
 } // namespace execution_test

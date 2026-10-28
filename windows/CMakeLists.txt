@@ -30,6 +30,7 @@ add_executable(TypeTide WIN32
     src/TranslationSession.cpp
     src/ProfileBinding.cpp
     src/ProfileEditor.cpp
+    src/ProfileStatus.cpp
     src/Translator.cpp
     src/BuiltInModel.cpp
     src/OllamaModels.cpp

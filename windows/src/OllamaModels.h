@@ -24,6 +24,10 @@ void FetchInstalledAsync(HWND notify, UINT message);
 /// 主线程调用：为已提交 profile 实际绑定的 Ollama 模型（去重）各发一次空 generate 预加载，保持 10 分钟。
 void PreloadAsync();
 
+/// Main thread: reacts to a discovered model list. It never changes or saves settings (a
+/// missing model stays visible as missing); it only preloads bound, installed models.
+void OnDiscovered(const std::vector<std::wstring>& installed);
+
 /// 主线程调用：给定已装模型列表，配置的模型未安装时改成第一个已装的并保存。
 /// 返回 true 表示发生了替换。
 bool ApplyResolvedModels(const std::vector<std::wstring>& installed);

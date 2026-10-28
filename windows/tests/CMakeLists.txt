@@ -119,6 +119,7 @@ add_executable(TranslationExecutionSelfTest
     ../src/TranslationExecution.cpp
     ../src/TranslationSession.cpp
     ../src/ProfileEditor.cpp
+    ../src/ProfileStatus.cpp
     TranslationExecutionSupport.cpp
     TranslationExecutionPromptTests.cpp
     TranslationExecutionDirectionTests.cpp
@@ -129,6 +130,7 @@ add_executable(TranslationExecutionSelfTest
     TranslationExecutionRuntimeTests.cpp
     TranslationSessionTests.cpp
     ProfileEditorTests.cpp
+    ProfileStatusTests.cpp
     TranslationExecutionSelfTest.cpp
 )
 

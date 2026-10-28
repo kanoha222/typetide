@@ -447,6 +447,14 @@ void CheckHealthAsync(std::function<void(HealthCheckResult)> completion) {
         });
 }
 
+void CheckConnectionAsync(const profilestatus::Probe&, const execution::ConnectionSnapshot&,
+                          std::function<void(HealthCheckResult)> completion) {
+    // RED scaffold: not implemented yet.
+    HealthCheckResult result;
+    result.message = L"Connection tests are not implemented yet.";
+    completion(std::move(result));
+}
+
 void ClearCacheForTesting() {
     Cache::shared().clear();
 }

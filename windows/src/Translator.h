@@ -7,6 +7,7 @@
 //
 #pragma once
 #include "Language.h"
+#include "ProfileStatus.h"
 #include "TranslationExecution.h"
 #include <cstdint>
 #include <functional>
@@ -70,6 +71,12 @@ std::optional<std::wstring> TranslateFully(const execution::ContextPtr& context,
 /// fixed synthetic text. Invoke on the main thread so those values are snapshotted safely;
 /// completion runs on a worker thread.
 void CheckHealthAsync(std::function<void(HealthCheckResult)> completion);
+
+/// Async connection test of one explicit backend + model on `connection`, using fixed synthetic
+/// text (never a selection, the clipboard or a profile prompt) and never the cache. Completion
+/// runs on a worker thread, or synchronously when the request cannot be prepared.
+void CheckConnectionAsync(const profilestatus::Probe& probe, const execution::ConnectionSnapshot& connection,
+                          std::function<void(HealthCheckResult)> completion);
 
 /// 测试钩子：清空缓存
 void ClearCacheForTesting();

@@ -1,7 +1,9 @@
 #include "RuntimeSelfTest.h"
 #include "Clipboard.h"
 #include "Json.h"
+#include "OllamaModels.h"
 #include "ProfileBinding.h"
+#include "ProfileStatus.h"
 #include "Settings.h"
 #include "TextReplacer.h"
 #include "TranslationExecution.h"
@@ -17,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Loopback mock only, synthetic text and a synthetic key: never a real provider, credential
@@ -323,6 +326,116 @@ void testEditorConflict() {
           "a save on the current baseline commits", error);
 }
 
+// Records after `from` whose body names `model`.
+size_t CountModelRequests(const MockEnv& env, size_t from, const std::string& model) {
+    const std::vector<Recorded> records = ReadRecords(env);
+    size_t count = 0;
+    for (size_t i = from; i < records.size(); ++i) {
+        bool ok = false;
+        const json::Value body = json::Parse(records[i].body, &ok);
+        if (ok && body["model"].isString() && body["model"].asString() == model) ++count;
+    }
+    return count;
+}
+
+void testMissingModel(const MockEnv& env) {
+    printf("[missing Ollama model]
+");
+    Settings& settings = Settings::shared();
+    Settings candidate = settings;
+    candidate.ollamaHost = "http://127.0.0.1";
+    candidate.ollamaPort = env.port;
+    // The legacy fields the old start-up auto-correction keyed on.
+    candidate.backend = TranslationBackend::Ollama;
+    candidate.ollamaModel = "missing-model:1b";
+    TranslationProfile missing = Profile(TranslationBackend::Ollama, "missing-model:1b", false);
+    missing.id = "runtime-missing";
+    TranslationProfile installed = Profile(TranslationBackend::Ollama, "mock-default", false);
+    installed.id = "runtime-installed";
+    candidate.profileConfig.profiles.push_back(missing);
+    candidate.profileConfig.profiles.push_back(installed);
+    candidate.profileConfig.bindings.shortcut1ProfileId = missing.id;
+    candidate.profileConfig.bindings.shortcut2ProfileId = installed.id;
+    std::string error;
+    if (!check(settings.commit(candidate, &error), "bind a missing and an installed Ollama model", error)) return;
+
+    std::wstring listError;
+    const std::vector<std::wstring> models = ollamamodels::ListInstalled("http://127.0.0.1", env.port, &listError);
+    if (!check(models == std::vector<std::wstring>{L"mock-default:latest", L"mock-exact:latest"},
+               "the mock lists its installed models", util::Narrow(listError))) return;
+    const SettingsData before = settings.committedData();
+    const size_t from = ReadRecords(env).size();
+    ollamamodels::OnDiscovered(models);
+    check(settings.committedData() == before && settings.ollamaModel == "missing-model:1b",
+          "a missing model is never replaced by an installed one");
+    Settings reloaded;
+    reloaded.load();
+    check(reloaded.snapshot().profileConfig == before.profileConfig && reloaded.ollamaModel == "missing-model:1b",
+          "discovery saves nothing");
+    const std::vector<std::wstring> known = models;
+    const std::vector<profilestatus::EntryStatus> statuses =
+        profilestatus::Describe(before.profileConfig, translator::ConnectionFrom(settings.snapshot()), &known);
+    check(statuses.size() == 3 && statuses[0].model == profilestatus::ModelState::Missing &&
+              statuses[0].profile.model == "missing-model:1b",
+          "the Settings summary reports the configured model as missing");
+    // Preload runs on a worker: wait (bounded) for the installed model's warm-up request.
+    bool warmed = false;
+    for (int i = 0; i < 50 && !warmed; ++i) {
+        warmed = CountModelRequests(env, from, "mock-default") > 0;
+        if (!warmed) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    check(warmed, "the installed bound model is preloaded");
+    check(CountModelRequests(env, from, "missing-model:1b") == 0, "the missing model is never preloaded");
+}
+
+translator::HealthCheckResult RunConnectionCheck(const profilestatus::Probe& probe,
+                                                 const execution::ConnectionSnapshot& connection) {
+    auto done = std::make_shared<std::promise<translator::HealthCheckResult>>();
+    std::future<translator::HealthCheckResult> result = done->get_future();
+    translator::CheckConnectionAsync(probe, connection, [done](translator::HealthCheckResult value) {
+        done->set_value(std::move(value));
+    });
+    if (result.wait_for(std::chrono::seconds(15)) != std::future_status::ready) {
+        translator::HealthCheckResult timedOut;
+        timedOut.message = L"timed out";
+        return timedOut;
+    }
+    return result.get();
+}
+
+void testConnectionCheck(const MockEnv& env) {
+    printf("[connection test of an explicit model]
+");
+    const std::wstring sentinel = L"CLIPBOARD_SENTINEL_NOT_FOR_TESTS";
+    const bool clipboardSet = clipboard::SetText(sentinel);
+    const size_t from = ReadRecords(env).size();
+    const translator::HealthCheckResult ollama =
+        RunConnectionCheck({TranslationBackend::Ollama, "mock-default"}, Connection(env, 31));
+    check(ollama.ok, "an installed Ollama model passes", util::Narrow(ollama.message));
+    check(CountModelRequests(env, from, "mock-default") == 1, "the test sends exactly that Ollama model");
+    const translator::HealthCheckResult again =
+        RunConnectionCheck({TranslationBackend::Ollama, "mock-default"}, Connection(env, 31));
+    check(again.ok && CountModelRequests(env, from, "mock-default") == 2, "a repeated test is never a cache hit");
+    const translator::HealthCheckResult cloud =
+        RunConnectionCheck({TranslationBackend::OpenAI, "mock-exact"}, Connection(env, 31));
+    check(cloud.ok, "a cloud model passes", util::Narrow(cloud.message));
+    const std::vector<Recorded> records = ReadRecords(env);
+    check(records.size() == from + 3 && records.back().path == "/v1/chat/completions" && records.back().auth,
+          "the cloud test reaches the configured endpoint with the key");
+    const translator::HealthCheckResult redirect =
+        RunConnectionCheck({TranslationBackend::OpenAI, "mock-redirect"}, Connection(env, 31));
+    check(!redirect.ok && redirect.message.find(L"307") != std::wstring::npos,
+          "a failing model is reported, not swapped for another", util::Narrow(redirect.message));
+    const std::vector<Recorded> sent = ReadRecords(env);
+    bool synthetic = sent.size() > from;
+    for (size_t i = from; i < sent.size(); ++i) {
+        const std::string& body = sent[i].body;
+        synthetic = synthetic && body.find("TypeTide connection test") != std::string::npos &&
+                    body.find(util::Narrow(sentinel)) == std::string::npos;
+    }
+    check(clipboardSet && synthetic, "tests send only fixed synthetic text, never the clipboard");
+}
+
 void testReplaceGuards() {
     printf("[replacement guards]\n");
     const std::wstring original = L"CLIPBOARD_BEFORE_REPLACE";
@@ -388,6 +501,8 @@ int RunRuntimeSelfTests() {
     testCommittedBinding(env);
     testBindingCommit();
     testEditorConflict();
+    testMissingModel(env);
+    testConnectionCheck(env);
     testReplaceGuards();
     testEpochBackfill(env);
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nall runtime tests passed\n", g_failures);

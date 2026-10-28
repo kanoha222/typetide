@@ -117,6 +117,12 @@ bool ApplyResolvedModels(const std::vector<std::wstring>& installed) {
     return true;
 }
 
+void OnDiscovered(const std::vector<std::wstring>& installed) {
+    // RED scaffold: keeps today's behavior until the implementation lands.
+    ApplyResolvedModels(installed);
+    PreloadAsync();
+}
+
 bool EnsureValidDefault() {
     const Settings& s = Settings::shared();
     if (s.backend != TranslationBackend::Ollama) return false;

@@ -1,5 +1,6 @@
-# Profile editor end-to-end test: launches the real TypeTide.exe with --open-profiles in an
-# isolated TYPETIDE_DATA_DIR and drives the native editor with window messages (WM_COMMAND,
+# Profile editor end-to-end test: launches the real TypeTide.exe with --open-profiles (and
+# finally --open-settings) in an isolated TYPETIDE_DATA_DIR and drives the native editor and the
+# Settings window's profile summary with window messages (WM_COMMAND,
 # WM_SETTEXT/WM_GETTEXT, LB_GETCOUNT, posted menu keys), like the other windows/scripts E2E
 # tests. Managed UI Automation sees these Win32 controls only as generic panes on the CI runner.
 # The editor is only given synthetic data: no clipboard, credentials or user selection. (The
@@ -28,6 +29,7 @@ public static class W {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr wParam, StringBuilder lParam);
     [DllImport("user32.dll", EntryPoint = "SendMessageW")] public static extern IntPtr SendMessageInt(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr lParam);
 
     static string ClassOf(IntPtr hwnd) {
         StringBuilder name = new StringBuilder(256);
@@ -66,6 +68,15 @@ public static class W {
         return all.ToString();
     }
 
+    /// Texts of every child control of `parent` (hidden pages included).
+    public static string[] ChildTexts(IntPtr parent) {
+        System.Collections.Generic.List<string> all = new System.Collections.Generic.List<string>();
+        EnumProc callback = delegate (IntPtr hwnd, IntPtr unused) { all.Add(Text(hwnd)); return true; };
+        EnumChildWindows(parent, callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return all.ToArray();
+    }
+
     /// Text of a window in another process (WM_GETTEXT is marshaled; GetWindowText is not).
     public static string Text(IntPtr hwnd) {
         int length = SendMessageInt(hwnd, 0x000E, IntPtr.Zero, IntPtr.Zero).ToInt32();  // WM_GETTEXTLENGTH
@@ -84,6 +95,9 @@ $IdNo = 7  # IDNO in the Save/Discard/Cancel message box
 $WM_SETTEXT = 0x000C; $WM_COMMAND = 0x0111; $BM_SETCHECK = 0x00F1; $LB_GETCOUNT = 0x018B
 $IdPresetMode = 3020
 $WM_KEYDOWN = 0x0100; $VK_DOWN = 0x28; $VK_RETURN = 0x0D
+# Control IDs of SettingsWindow's profile summaries.
+$SIdSummary = @(1901, 1902, 1903); $SIdManage = 1904; $SIdTest = 1905; $SIdTestStatus = 1906
+$SIdLanguage = @(1911, 1912, 1913)
 
 $script:failures = 0
 $script:app = $null
@@ -134,18 +148,24 @@ function Read-Settings {
     return Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json
 }
 
-function Start-Editor {
+# (Re)starts the app with `$argument` and returns its top-level window of class `$className`.
+function Start-App([string]$argument, [string]$className) {
     if ($script:app) {
         Stop-Process -Id $script:app.Id -Force -ErrorAction SilentlyContinue
         $script:app.WaitForExit(5000) | Out-Null  # frees the single-instance mutex
     }
-    $script:app = Start-Process -FilePath $Exe -ArgumentList '--open-profiles' -PassThru
-    $window = Wait-For { Find-AppWindow 'TypeTideProfiles' } 15000
+    $script:app = Start-Process -FilePath $Exe -ArgumentList $argument -PassThru
+    $window = Wait-For { Find-AppWindow $className } 15000
     if (-not $window) {
-        Write-Host "  top-level windows of the app:"  # host, not output: Start-Editor returns the window
+        Write-Host "  top-level windows of the app:"  # host, not output: Start-App returns the window
         Write-Host ([W]::ListTop([uint32]$script:app.Id))
-        return $null
     }
+    return $window
+}
+
+function Start-Editor {
+    $window = Start-App '--open-profiles' 'TypeTideProfiles'
+    if (-not $window) { return $null }
     # The window is shown once open() has filled the controls.
     if (-not (Wait-For { (Item-Count $window) -gt 0 })) { return $null }
     return $window
@@ -221,6 +241,60 @@ function Test-DeleteWithReplacement($window) {
         "the entries bound to the deleted profile moved to the chosen replacement"
 }
 
+# Name of the profile settings.json binds to entry `$index` (0 = shortcut 1, 1 = shortcut 2,
+# 2 = selection).
+function Bound-Name($settings, [int]$index) {
+    $id = @($settings.shortcut1ProfileId, $settings.shortcut2ProfileId, $settings.selectionProfileId)[$index]
+    return @($settings.profiles | Where-Object { $_.id -eq $id } | ForEach-Object { $_.name })[0]
+}
+
+function Test-SettingsSummary {
+    Write-Output "[settings summary and profile manager entry]"
+    $settingsWindow = Start-App '--open-settings' 'TypeTideSettings'
+    Check ($null -ne $settingsWindow) "the settings window opens"
+    if (-not $settingsWindow) { return }
+    $json = Read-Settings
+    $labels = @('Shortcut 1', 'Shortcut 2', 'Selection')
+    for ($i = 0; $i -lt 3; $i++) {
+        $line = Get-Text $settingsWindow $SIdSummary[$i]
+        $name = Bound-Name $json $i
+        Check ($line.StartsWith($labels[$i]) -and $name -and $line.Contains($name) -and $line.Contains('Built-in') -and $line.Contains('local')) `
+            "the Translation page shows the profile bound to $($labels[$i]), its backend and route" "'$line'"
+        $languages = Get-Text $settingsWindow $SIdLanguage[$i]
+        Check ($name -and $languages.Contains($name) -and $languages.Contains('English')) `
+            "the Languages page shows the languages of the $($labels[$i]) profile" "'$languages'"
+    }
+    $texts = [W]::ChildTexts($settingsWindow)
+    foreach ($legacy in @('Native language:', 'Foreign language:', 'Read direction:', 'Rewrite direction:',
+                          'Read style:', 'Rewrite style:', 'Ollama model', 'API model')) {
+        Check (-not ($texts -contains $legacy)) "the old '$legacy' control is gone"
+    }
+    Check (($texts -contains 'Base URL') -and ($texts -contains 'API key')) "the cloud connection fields stay"
+
+    Click $settingsWindow $SIdTest
+    $finished = Wait-For { (Get-Text $settingsWindow $SIdTestStatus) -like 'Tested*' } 15000
+    Check ([bool]$finished) "testing the bound models finishes" "status '$(Get-Text $settingsWindow $SIdTestStatus)'"
+    Check ((Get-Text $settingsWindow $SIdSummary[0]) -like '*Download the built-in model*') `
+        "a bound model's test result appears on its line" "'$(Get-Text $settingsWindow $SIdSummary[0])'"
+
+    Click $settingsWindow $SIdManage
+    $editor = Wait-For { Find-AppWindow 'TypeTideProfiles' }
+    Check ($null -ne $editor) "Manage profiles opens the profile editor"
+    if (-not $editor) { return }
+    if (-not (Wait-For { (Item-Count $editor) -gt 0 })) { return }
+    $firstId = @($json.profiles)[0].id  # selected when the editor opens
+    $entryIds = @($json.shortcut1ProfileId, $json.shortcut2ProfileId, $json.selectionProfileId)
+    $boundTo = @(0, 1, 2 | Where-Object { $entryIds[$_] -eq $firstId })
+    Check ($boundTo.Count -gt 0) "the first profile is bound to an entry"
+    Set-Text $editor $IdName 'Renamed for the summary'
+    Click $editor $IdSave
+    Check ([bool](Wait-For { (Status-Text $editor) -like 'Saved*' })) "the rename is saved" "status '$(Status-Text $editor)'"
+    foreach ($i in $boundTo) {
+        Check ([bool](Wait-For { (Get-Text $settingsWindow $SIdSummary[$i]) -like '*Renamed for the summary*' })) `
+            "an editor save updates the $($labels[$i]) summary" "'$(Get-Text $settingsWindow $SIdSummary[$i])'"
+    }
+}
+
 if (-not (Test-Path $Exe)) { Write-Output "missing executable: $Exe"; exit 2 }
 if ((Test-Path $DataDir) -and @(Get-ChildItem -Force $DataDir).Count -gt 0) {
     Write-Output "DataDir must be new or empty (refusing to touch existing data): $DataDir"
@@ -240,11 +314,12 @@ try {
         if ($window) { Test-OversizePrompt $window }
         $window = Start-Editor
         if ($window) { Test-DeleteWithReplacement $window }
+        Test-SettingsSummary
     }
 } finally {
     if ($script:app) { Stop-Process -Id $script:app.Id -Force -ErrorAction SilentlyContinue }
 }
 
 if ($script:failures -gt 0) { Write-Output "`n$($script:failures) FAILURE(S)"; exit 1 }
-Write-Output "`nall profile editor checks passed"
+Write-Output "`nall profile editor and settings summary checks passed"
 exit 0

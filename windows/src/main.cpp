@@ -114,6 +114,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
 
     if (!App::shared().init(inst)) return 1;
     if (args.find(L"--open-profiles") != std::wstring::npos) App::shared().openProfiles();
+    if (args.find(L"--open-settings") != std::wstring::npos) App::shared().openSettings();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
