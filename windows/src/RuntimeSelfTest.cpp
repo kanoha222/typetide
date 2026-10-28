@@ -339,8 +339,7 @@ size_t CountModelRequests(const MockEnv& env, size_t from, const std::string& mo
 }
 
 void testMissingModel(const MockEnv& env) {
-    printf("[missing Ollama model]
-");
+    printf("[missing Ollama model]\n");
     Settings& settings = Settings::shared();
     Settings candidate = settings;
     candidate.ollamaHost = "http://127.0.0.1";
@@ -404,8 +403,7 @@ translator::HealthCheckResult RunConnectionCheck(const profilestatus::Probe& pro
 }
 
 void testConnectionCheck(const MockEnv& env) {
-    printf("[connection test of an explicit model]
-");
+    printf("[connection test of an explicit model]\n");
     const std::wstring sentinel = L"CLIPBOARD_SENTINEL_NOT_FOR_TESTS";
     const bool clipboardSet = clipboard::SetText(sentinel);
     const size_t from = ReadRecords(env).size();
