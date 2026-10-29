@@ -61,6 +61,14 @@
 - 第 3 步实现：设置窗口 Translation 页改为三个入口的摘要（profile、backend 与模型、本地/网络/云端、模型未安装提示、连接测试结果）与 “Manage profiles…”，保留内置模型下载、Ollama 地址与已装模型、云端 provider/Base URL/API key；Languages 页改为各入口的语言/方向/风格摘要；Behavior 页移除风格选择；快捷键页改称 Shortcut 1/2。旧的 backend 单选、Ollama/API 模型、语言/方向/风格控件已删除（字段仍保留在 settings.json 供迁移）。`ollamamodels::ApplyResolvedModels`/`EnsureValidDefault` 已删除：发现结果只用于预加载已绑定且已安装的模型，从不替换或保存；预加载由代次计数取消过期的批次。“Test bound models” 对每个已绑定的 backend + 模型各测一次（`translator::CheckConnectionAsync`，固定合成句、每次唯一、不命中缓存）。发现结果按 Ollama 端点版本、连接测试按连接 epoch 与绑定集合经 `profilestatus::ResultGuard` 丢弃过期结果。编辑器保存与托盘绑定后通知设置窗口刷新。独立审查后的修正：连接测试不读写翻译缓存、不记翻译诊断；设置窗口填好控件后才显示；连接或绑定变化后此前的测试通过不再计入首次启动完成。已知未处理：首次启动时应用与设置窗口各做一次发现，同一模型可能被预热两次（无害）。
 - Phase 5 覆盖率工具（用户选择）：CI 运行器上从 OpenCppCoverage 官方 GitHub release 下载安装包，运行前核对固定的 SHA-256；本机不安装任何工具。
 
+## Phase 5：验证与证据（进行中）
+
+- 触发路径端到端（job `trigger-path-e2e`，[commit `01e78cd` 全部通过](https://github.com/kanoha222/typetide/actions/runs/40816512097/job/123258733455)）：真实 TypeTide.exe + 注入全局快捷键 + WinForms/WPF 宿主 + 本机 mock（Ollama，三个 profile 各用不同 mock 模型，按请求记录判断每次触发执行了哪个 profile）。覆盖快捷键 1 弹窗与弹窗 Replace（剪贴板还原）、快捷键 2 直接替换且 custom 输出逐字节一致、custom 提示词渲染进 system 而选中文字原样发送、两个槽位动作互换与相同动作时仍按物理槽位选 profile、清空的快捷键不触发、划词入口执行 Selection 绑定（WPF 宿主）、托盘三个绑定子菜单列出全部 profile 并勾选当前绑定、托盘改绑后下一次触发立即生效；并在 CI 上首次运行既有的 `test-e2e.ps1`（WinForms）与 `test-e2e-wpf.ps1`（WPF）冒烟测试。首次运行（`73d8741`）划词与托盘改绑失败：前者是测试只注入了鼠标抬起，后者在下一次运行（`1deb187`）未复现，按偶发处理并保留诊断输出。
+- 已知产品限制（非本 PR 引入）：WinForms TextBox 不提供 UIA TextPattern（调试日志 `tp=0`），快捷键取词在其中走 Ctrl+C 兜底，而划词入口只用 UIA、从不对鼠标抬起发送 Ctrl+C，因此在此类控件中不会触发。
+- 实测覆盖率（job `line-coverage`，[run `40816042368`](https://github.com/kanoha222/typetide/actions/runs/40816042368/job/123257210179)，commit `1deb187`）：OpenCppCoverage 0.9.9.0 安装包在运行前核对固定 SHA-256 与 SHA-512 首尾（取自 Chocolatey 对同一资产公布的值），Debug + PDB 构建四个独立测试目标与 TypeTide.exe，在覆盖率下运行全部自检（含对 mock 的 `--selftest-runtime`），合并为 Cobertura，由 `windows/scripts/coverage-report.py` 统计：**本 PR 改动的核心行 1936/2158 = 89.7%**（门槛 ≥80%，已达到；核心 = 相对 `origin/main` 改动的 `windows/src` 非 UI、非自检源文件，只计编译器生成代码的行，各测试二进制的命中合并）；核心文件全部行 2360/2855 = 82.7%；项目基线（不含自检文件）2686/6346 = 42.3%；UI 文件 35/2725 = 1.3%（UI 由端到端 job 驱动，端到端不在覆盖率下运行）。最低的核心文件：SelectionCapture.cpp 0%（只有端到端可达）、TextReplacer.cpp 38%、Credentials.cpp 47%（测试从不访问真实凭据管理器）、OllamaModels.cpp 69%、ProfileBinding.cpp 79%。有改动却未被任何覆盖二进制编译的核心源文件会使门槛失败，而不是被当作已覆盖。
+- 未在覆盖率下运行：端到端 job（UI、取词、粘贴路径）。未验证：读屏/UIA 可访问性、真实 provider 与真实凭据管理器、macOS 功能适配。
+- 最终代码审查与安全审查进行中（首次因 API 限流中断，正逐个重跑）。
+
 ## 验证入口与剩余门槛
 
 - [工作流](../../../.github/workflows/translation-profiles.yml) 分别运行 `ProfileCoreSelfTest`、`NativeStorageSelfTest`、`NativeTransactionSelfTest` 与新增的 `TranslationExecutionSelfTest`，保留真实失败退出码与日志构件。
