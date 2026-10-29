@@ -68,6 +68,7 @@ private:
         bool isWholeField;
         RECT anchor;
         HWND window;             // 取词时的前台窗口（粘贴目标）
+        HWND focus;              // 取词时该窗口里有焦点的控件
         std::wstring original;
         Language target;
     };
@@ -104,6 +105,7 @@ private:
     void onTrayEvent(UINT event);
     void onHotkey(WPARAM id);
     void bindProfile(ProfileEntry entry, const std::string& profileId);
+    void supersedeBeforeCapture();
     /// 超长输入直接弹错误提示（LLM 又慢又贵，弹窗也放不下）；返回 true = 已拦截
     bool rejectIfTooLong(const capture::Capture& cap, const execution::ContextPtr& context);
     void startStream(std::optional<Language> targetOverride);
@@ -121,8 +123,10 @@ private:
     execution::ContextPtr sessionContext_;     // 弹窗会话的冻结 profile（重试/改目标语言沿用）
     std::wstring sessionText_;
     HWND sessionWindow_ = nullptr;             // 弹窗会话取词时的前台窗口（Replace 的粘贴目标）
+    HWND sessionFocus_ = nullptr;              // 以及该窗口里有焦点的控件
     bool currentReplaceSelectAll_ = false;     // 弹窗 Replace 时是否先全选
     bool hotkeyWarningShown_ = false;
+    bool quitting_ = false;                    // after Quit: no new trigger or capture result
     bool readShortcutRegistered_ = false;
     bool rewriteShortcutRegistered_ = false;
     bool shortcutsReady_ = false;

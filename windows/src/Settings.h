@@ -109,6 +109,11 @@ struct Settings : SettingsData {
     const SettingsData& committedData() const { return committed_; }
 
     bool commit(const Settings& candidate, std::string* error = nullptr);
+    // True after loading a legacy settings.json that stored the API key in plain text.
+    bool hasLegacyPlaintextKey() const { return legacyPlaintextKey_; }
+    // Main thread, at start-up: commits the committed values once, which stores the key in the
+    // credential store and rewrites settings.json without it. True when nothing was needed.
+    bool migrateLegacyPlaintextKey(std::string* error = nullptr);
     // Resolved committed values only. No credential I/O; copy on the main thread.
     SettingsSnapshot snapshot() const;
 
@@ -133,4 +138,5 @@ private:
     std::string credentialRef_;
     bool legacyOrigin_ = false;
     bool versioned_ = false;
+    bool legacyPlaintextKey_ = false;
 };

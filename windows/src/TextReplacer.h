@@ -15,7 +15,8 @@ enum class ReplaceOutcome {
     Pasted,                // Ctrl+V issued and the target read the clipboard
     PasteNotConsumed,      // Ctrl+V issued but nothing read the clipboard within 2 s
     AbortedStale,          // a newer translation superseded this one before input was committed
-    AbortedTargetChanged,  // the captured window is no longer in front
+    AbortedTargetChanged,  // the captured window or its focused control is no longer in front
+    ClipboardUnavailable,  // the clipboard could not be saved or did not hold our text: no input
 };
 
 /// 用译文替换（异步，立即返回）。selectAll=true 时先 Ctrl+A 全选（整框改写）。

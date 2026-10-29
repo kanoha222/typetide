@@ -1,6 +1,7 @@
 #include "TextReplacer.h"
 #include "Clipboard.h"
 #include "Keyboard.h"
+#include "SelectionCapture.h"
 #include "LocalDiagnostics.h"
 #include "Util.h"
 #include <cstdint>
@@ -55,9 +56,11 @@ LRESULT CALLBACK ownerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 /// Final input-commit boundary: the session must still be current and the captured window
 /// still in front. Checked before the clipboard is touched and before every injected key.
 bool mayCommit(const session::PasteGuard& guard, ReplaceOutcome* outcome) {
-    if (guard.allows(reinterpret_cast<std::uintptr_t>(GetForegroundWindow()))) return true;
-    // allows(target) only fails when the session itself is no longer current.
-    *outcome = guard.allows(guard.target) ? ReplaceOutcome::AbortedTargetChanged : ReplaceOutcome::AbortedStale;
+    const HWND foreground = GetForegroundWindow();
+    if (guard.allows(reinterpret_cast<std::uintptr_t>(foreground),
+                     reinterpret_cast<std::uintptr_t>(capture::FocusedControl(foreground))))
+        return true;
+    *outcome = guard.isCurrent() ? ReplaceOutcome::AbortedTargetChanged : ReplaceOutcome::AbortedStale;
     return false;
 }
 
@@ -78,20 +81,24 @@ public:
         (void)registered;
         owner_ = CreateWindowExW(0, kOwnerClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
                                  GetModuleHandleW(nullptr), nullptr);
+        if (!saved_.readable) return;  // could not save the user's clipboard: touch nothing
         if (owner_) {
             SetWindowLongPtrW(owner_, GWLP_USERDATA, (LONG_PTR)&ctx_);
             if (OpenClipboard(owner_)) {
                 EmptyClipboard();
                 SetClipboardData(CF_UNICODETEXT, nullptr);  // 延迟渲染
                 CloseClipboard();
-                delayed_ = true;
+                delayed_ = GetClipboardOwner() == owner_;
             }
         }
-        if (!delayed_) clipboard::SetText(text);  // 兜底：老式直接写 + 固定延迟
+        if (!delayed_) {
+            written_ = clipboard::SetText(text);  // 兜底：老式直接写 + 固定延迟
+            sequence_ = clipboard::SequenceNumber();
+        }
     }
 
     ~PasteTransaction() {
-        clipboard::Restore(saved_);
+        clipboard::Restore(saved_);  // a no-op when the snapshot could not be taken
         if (owner_) {
             SetWindowLongPtrW(owner_, GWLP_USERDATA, 0);
             DestroyWindow(owner_);
@@ -100,6 +107,14 @@ public:
 
     PasteTransaction(const PasteTransaction&) = delete;
     PasteTransaction& operator=(const PasteTransaction&) = delete;
+
+    /// Our text is on the clipboard (delayed or written) and the user's clipboard was saved.
+    bool ready() const { return saved_.readable && (delayed_ || written_); }
+
+    /// Right before Ctrl+V: nobody replaced our clipboard content since it was set.
+    bool stillOurs() const {
+        return delayed_ ? GetClipboardOwner() == owner_ : clipboard::SequenceNumber() == sequence_;
+    }
 
     /// After Ctrl+V: true when the target actually read the clipboard (or rendering is direct).
     bool waitForPaste() {
@@ -130,6 +145,8 @@ private:
     RenderContext ctx_;
     HWND owner_ = nullptr;
     bool delayed_ = false;
+    bool written_ = false;
+    DWORD sequence_ = 0;
 };
 
 void waitForClickRelease() {
@@ -147,12 +164,15 @@ ReplaceOutcome paste(const std::wstring& text, bool selectAll, const session::Pa
     ReplaceOutcome outcome = ReplaceOutcome::Pasted;
     if (!mayCommit(guard, &outcome)) return outcome;  // nothing touched yet
     PasteTransaction transaction(text);
+    // Ctrl+V without our text on the clipboard would paste whatever the user copied last.
+    if (!transaction.ready()) return ReplaceOutcome::ClipboardUnavailable;
     if (selectAll) {
         if (!mayCommit(guard, &outcome)) return outcome;
         keyboard::SendSelectAll();
         Sleep(40);
     }
     if (!mayCommit(guard, &outcome)) return outcome;
+    if (!transaction.stillOurs()) return ReplaceOutcome::ClipboardUnavailable;
     keyboard::SendPaste();  // from here the input cannot be taken back
     return transaction.waitForPaste() ? ReplaceOutcome::Pasted : ReplaceOutcome::PasteNotConsumed;
 }
@@ -163,6 +183,7 @@ const char* failureReason(ReplaceOutcome outcome) {
     case ReplaceOutcome::PasteNotConsumed: return "pasteNotConsumed";
     case ReplaceOutcome::AbortedStale: return "superseded";
     case ReplaceOutcome::AbortedTargetChanged: return "targetChanged";
+    case ReplaceOutcome::ClipboardUnavailable: return "clipboardUnavailable";
     }
     return "unknown";
 }

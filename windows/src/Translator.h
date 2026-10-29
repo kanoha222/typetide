@@ -63,6 +63,11 @@ execution::ContextPtr FreezeEntry(ProfileEntry entry, ShortcutAction action);
 uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
                 std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone);
 
+/// Stream() for tests (the profile editor's fixed-text test): never reads or writes the cache
+/// and records no translation diagnostics, so a result always comes from the provider.
+uint64_t StreamUncached(const execution::ContextPtr& context, const std::wstring& text,
+                        std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone);
+
 /// Blocking variant returning execution::DeliveredOutput; nullopt + error on failure.
 std::optional<std::wstring> TranslateFully(const execution::ContextPtr& context, const std::wstring& text,
                                            std::wstring* error);

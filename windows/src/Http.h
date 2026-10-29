@@ -24,7 +24,7 @@ Result PostStream(const std::wstring& url,
                   const std::function<void(const char* data, size_t len)>& onChunk,
                   const std::atomic<bool>& cancel);
 
-/// 一次性 GET（用于版本检查等小请求）
-Result Get(const std::wstring& url, const std::wstring& extraHeaders = L"");
+/// 一次性 GET（用于版本检查等小请求）。followRedirects=false reports a 3xx as an error.
+Result Get(const std::wstring& url, const std::wstring& extraHeaders = L"", bool followRedirects = true);
 
 } // namespace http

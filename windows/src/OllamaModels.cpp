@@ -2,12 +2,14 @@
 #include "Http.h"
 #include "Json.h"
 #include "Settings.h"
+#include "TranslationExecution.h"
 #include "Util.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cwchar>
 #include <cwctype>
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <thread>
@@ -16,6 +18,8 @@
 namespace ollamamodels {
 
 namespace {
+std::atomic<uint64_t> g_preloadGeneration{0};
+
 double parameterBillions(const std::wstring& model) {
     std::wstring lower = util::ToLower(model);
     size_t b = lower.find(L'b');
@@ -34,9 +38,12 @@ double parameterBillions(const std::wstring& model) {
 } // namespace
 
 std::vector<std::wstring> ListInstalled(const std::string& host, int port, std::wstring* error) {
-    std::wstring url = util::Widen(host) + L":" + std::to_wstring(port) + L"/api/tags";
-
-    http::Result r = http::Get(url);
+    const std::optional<std::wstring> base = execution::OllamaBase(host, port);
+    if (!base) {
+        if (error) *error = L"Invalid Ollama host. Use http(s)://host only and set the port separately.";
+        return {};
+    }
+    http::Result r = http::Get(*base + L"/api/tags", L"", /*followRedirects=*/false);
     if (!r.ok) {
         if (error)
             *error = r.status == 0 ? L"Can't reach Ollama — is `ollama serve` running?"
@@ -74,29 +81,37 @@ void FetchInstalledAsync(HWND notify, UINT message, profilestatus::Ticket ticket
 void PreloadAsync(const std::vector<std::wstring>* installed) {
     // Only models that committed profiles actually bind, each once; never the whole library and
     // never a substitute for a missing model.
-    static std::atomic<uint64_t> generation{0};
-    const uint64_t mine = ++generation;
+    const uint64_t mine = ++g_preloadGeneration;
     const SettingsSnapshot snapshot = Settings::shared().snapshot();
     const std::vector<std::string> models = profilestatus::PreloadModels(snapshot.profileConfig, installed);
-    if (models.empty()) return;
-    const std::wstring url =
-        util::Widen(snapshot.ollamaHost) + L":" + std::to_wstring(snapshot.ollamaPort) + L"/api/generate";
+    const std::optional<std::wstring> base = execution::OllamaBase(snapshot.ollamaHost, snapshot.ollamaPort);
+    if (models.empty() || !base) return;
+    const std::wstring url = *base + L"/api/generate";
 
     std::thread([url, models, mine] {
         for (const std::string& model : models) {
-            if (generation.load() != mine) return;  // bindings or connection changed since
-            json::Object body;
-            body["model"] = model;
-            body["prompt"] = "";
-            body["stream"] = false;
-            body["keep_alive"] = "10m";
-            body["think"] = false;
-            std::atomic<bool> cancel{false};
-            http::Result r = http::PostStream(url, json::Value(std::move(body)).dump(), L"",
-                                              [](const char*, size_t) {}, cancel);
-            if (!r.ok) util::Log("ollama preload failed: %s", r.error.c_str());
+            if (g_preloadGeneration.load() != mine) return;  // bindings or connection changed since
+            for (const bool think : {true, false}) {  // models that reject "think" answer HTTP 400
+                json::Object body;
+                body["model"] = model;
+                body["prompt"] = "";
+                body["stream"] = false;
+                body["keep_alive"] = "10m";
+                if (think) body["think"] = false;
+                std::atomic<bool> cancel{false};
+                http::Result r = http::PostStream(url, json::Value(std::move(body)).dump(), L"",
+                                                  [](const char*, size_t) {}, cancel);
+                if (r.ok || r.status != 400 || !think) {
+                    if (!r.ok) util::Log("ollama preload failed: %s", r.error.c_str());
+                    break;
+                }
+            }
         }
     }).detach();
+}
+
+void CancelPreload() {
+    ++g_preloadGeneration;
 }
 
 void OnDiscovered(const std::vector<std::wstring>& installed) {

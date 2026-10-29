@@ -120,8 +120,22 @@ void TestUnknownTarget() {
     Ledger ledger;
     const uint64_t current = ledger.beginSession().session;
     const session::PasteGuard guard = ledger.pasteGuard(current, 0);
-    Check(guard.allows(kEditor) && guard.allows(kOtherWindow),
-          "without a captured window only the session is checked");
+    Check(guard.isCurrent(), "a guard without a captured window still belongs to the current session");
+    Check(!guard.allows(kEditor) && !guard.allows(kOtherWindow) && !guard.allows(0),
+          "without a captured window no input is ever committed");
+}
+
+void TestFocusedControl() {
+    constexpr std::uintptr_t kField = 0x5100, kOtherField = 0x5200;
+    Ledger ledger;
+    const uint64_t current = ledger.beginSession().session;
+    const session::PasteGuard guard = ledger.pasteGuard(current, kEditor, kField);
+    Check(guard.allows(kEditor, kField), "the paste may go into the captured window and control");
+    Check(!guard.allows(kEditor, kOtherField), "another control of the same window is refused");
+    Check(!guard.allows(kEditor, 0), "an unknown focused control is refused when one was captured");
+    Check(!guard.allows(kOtherWindow, kField), "the window is still checked");
+    const session::PasteGuard windowOnly = ledger.pasteGuard(current, kEditor);
+    Check(windowOnly.allows(kEditor, kOtherField), "without a captured control only the window is checked");
 }
 
 void TestAppExit() {
@@ -163,6 +177,7 @@ void RunSessionTests() {
     TestNewSessionSupersedes();
     TestCallbackBeforeAttach();
     TestRetryAndRetarget();
+    TestFocusedControl();
     TestStaleCloseIsolated();
     TestDismiss();
     TestSupersededPopup();

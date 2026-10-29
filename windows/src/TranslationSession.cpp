@@ -13,9 +13,13 @@ std::vector<uint64_t> Take(uint64_t* request) {
 
 } // namespace
 
-bool PasteGuard::allows(std::uintptr_t foreground) const {
-    if (!live || session == 0 || live->load() != session) return false;
-    return target == 0 || target == foreground;
+bool PasteGuard::isCurrent() const {
+    return live && session != 0 && live->load() == session;
+}
+
+bool PasteGuard::allows(std::uintptr_t foreground, std::uintptr_t focused) const {
+    if (!isCurrent() || target == 0 || target != foreground) return false;
+    return focus == 0 || focus == focused;
 }
 
 Ledger::Ledger() : live_(std::make_shared<std::atomic<uint64_t>>(0)) {}
@@ -55,8 +59,8 @@ std::vector<uint64_t> Ledger::close(uint64_t session, CloseReason reason) {
     return Take(&request_);
 }
 
-PasteGuard Ledger::pasteGuard(uint64_t session, std::uintptr_t target) const {
-    return {live_, session, target};
+PasteGuard Ledger::pasteGuard(uint64_t session, std::uintptr_t target, std::uintptr_t focus) const {
+    return {live_, session, target, focus};
 }
 
 } // namespace session

@@ -22,6 +22,7 @@ DWORD SequenceNumber();
 /// 我们只承诺还原文本。
 struct Snapshot {
     std::optional<std::wstring> text;
+    bool readable = true;  // false: the clipboard could not be opened, so Restore leaves it alone
 };
 
 Snapshot Take();

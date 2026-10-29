@@ -9,6 +9,7 @@
 namespace execution_test {
 namespace {
 
+using execution::OllamaBase;
 using execution::PrepareStatus;
 using execution::PreparedRequest;
 
@@ -80,6 +81,24 @@ void TestOpenAIMalformedBases() {
 void TestOpenAIKeyAndUrlBuilding() {
     Check(OpenAIWith("https://api.example.test/v1", "").status == PrepareStatus::KeyMissing,
           "OpenAI HTTPS without a key is KeyMissing");
+    const char* const badKeys[] = {"synthetic\r\nX-Injected: 1", "synthetic key", "synthetic\tkey",
+                                   "synthetic-\xC3\xA9", "synthetic\x7F"};
+    for (const char* key : badKeys)
+        Check(OpenAIWith("https://api.example.test/v1", key).status == PrepareStatus::KeyInvalid,
+              "a key with line breaks, spaces, controls or non-ASCII bytes is KeyInvalid");
+    Check(OpenAIWith("http://127.0.0.1:8080/v1", "synthetic key").status == PrepareStatus::KeyInvalid,
+          "the key rule applies on loopback too (the key is still sent as a header)");
+    Check(OpenAIWith("https://api.example.test/v1", "sk-Synthetic_0.9~!").status == PrepareStatus::Ok,
+          "a printable-ASCII key is accepted");
+    Check(OllamaBase("http://127.0.0.1", 11434) == std::optional<std::wstring>(L"http://127.0.0.1:11434") &&
+              OllamaBase("https://ollama.example.test/", 443) ==
+                  std::optional<std::wstring>(L"https://ollama.example.test:443"),
+          "OllamaBase joins a bare scheme://host with the port");
+    Check(!OllamaBase("", 11434) && !OllamaBase("http://127.0.0.1", 0) && !OllamaBase("http://127.0.0.1", 65536) &&
+              !OllamaBase("http://127.0.0.1:11434", 11434) && !OllamaBase("http://h.example.test/api", 11434) &&
+              !OllamaBase("http://h.example.test?x=1", 11434) && !OllamaBase("http://user@h.example.test", 11434) &&
+              !OllamaBase("ftp://h.example.test", 11434),
+          "OllamaBase refuses a missing host, bad port, explicit port, path, query, userinfo or scheme");
     const struct { const char* base; const wchar_t* url; } rows[] = {
         {"https://api.example.test/v1/", L"https://api.example.test/v1/chat/completions"},
         {"https://api.example.test/v1///", L"https://api.example.test/v1/chat/completions"},

@@ -16,9 +16,8 @@ struct Opener {
 };
 } // namespace
 
-std::optional<std::wstring> GetText() {
-    Opener open;
-    if (!open.ok) return std::nullopt;
+/// Text of the already opened clipboard.
+std::optional<std::wstring> readOpen() {
     HANDLE h = GetClipboardData(CF_UNICODETEXT);
     if (!h) return std::nullopt;
     auto* p = static_cast<const wchar_t*>(GlobalLock(h));
@@ -26,6 +25,12 @@ std::optional<std::wstring> GetText() {
     std::wstring text(p);
     GlobalUnlock(h);
     return text;
+}
+
+std::optional<std::wstring> GetText() {
+    Opener open;
+    if (!open.ok) return std::nullopt;
+    return readOpen();
 }
 
 bool SetText(const std::wstring& text) {
@@ -51,7 +56,9 @@ DWORD SequenceNumber() {
 }
 
 Snapshot Take() {
-    return Snapshot{GetText()};
+    Opener open;
+    if (!open.ok) return Snapshot{std::nullopt, false};
+    return Snapshot{readOpen(), true};
 }
 
 std::mutex& TransactionMutex() {
@@ -60,6 +67,7 @@ std::mutex& TransactionMutex() {
 }
 
 void Restore(const Snapshot& snap) {
+    if (!snap.readable) return;  // never empty a clipboard we could not read
     if (snap.text) {
         SetText(*snap.text);
     } else {

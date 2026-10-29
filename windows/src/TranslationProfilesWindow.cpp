@@ -551,7 +551,7 @@ void runTest() {
     HWND hwnd = g.hwnd;
     setStatus(L"Testing with fixed text…");
     SetTimer(g.hwnd, kTestTimer, kTestTimerMs, nullptr);
-    g.testRequest = translator::Stream(
+    g.testRequest = translator::StreamUncached(
         context, L"Hello! This is a TypeTide profile test.", std::nullopt,
         [mailbox, token](uint64_t, const std::wstring& delta) {
             std::lock_guard lock(mailbox->mutex);
@@ -772,6 +772,15 @@ void open(HWND /*appWindow*/) {
 
 bool handleDialogMessage(MSG* msg) {
     return g.hwnd && IsDialogMessageW(g.hwnd, msg);
+}
+
+void committedChanged() {
+    if (!g.hwnd || !g.editor || g.modalDepth > 0) return;
+    pullEdits();
+    if (dirty()) return;  // unsaved edits stay; a later Save reports the conflict
+    invalidateTest();
+    g.editor->markSaved(Settings::shared().committedData().profileConfig);
+    reloadAll();
 }
 
 } // namespace profileswindow

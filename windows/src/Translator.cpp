@@ -138,6 +138,15 @@ struct StreamOutcome {
     std::wstring full;
 };
 
+// Provider text is shown in the popup and the editor: one short line, no control characters.
+std::wstring displayable(std::wstring text) {
+    constexpr size_t kMaxChars = 300;
+    for (wchar_t& c : text)
+        if (c < 0x20 || c == 0x7F) c = L' ';
+    if (text.size() > kMaxChars) text = text.substr(0, kMaxChars) + L"…";
+    return text;
+}
+
 std::wstring providerError(const http::Result& result) {
     if (!result.body.empty()) {
         bool ok = false;
@@ -145,12 +154,12 @@ std::wstring providerError(const http::Result& result) {
         if (ok) {
             const json::Value& nested = body["error"];
             if (nested.isObject() && nested["message"].isString())
-                return util::Widen(nested["message"].asString());
-            if (nested.isString()) return util::Widen(nested.asString());
-            if (body["message"].isString()) return util::Widen(body["message"].asString());
+                return displayable(util::Widen(nested["message"].asString()));
+            if (nested.isString()) return displayable(util::Widen(nested.asString()));
+            if (body["message"].isString()) return displayable(util::Widen(body["message"].asString()));
         }
     }
-    return util::Widen(result.error);
+    return displayable(util::Widen(result.error));
 }
 
 StreamOutcome runOllama(const Job& job, uint64_t id, const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
@@ -381,6 +390,11 @@ uint64_t startStream(const execution::ContextPtr& context, const std::wstring& t
 uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
                 std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
     return startStream(context, text, targetOverride, std::move(onDelta), std::move(onDone), false);
+}
+
+uint64_t StreamUncached(const execution::ContextPtr& context, const std::wstring& text,
+                        std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
+    return startStream(context, text, targetOverride, std::move(onDelta), std::move(onDone), true);
 }
 
 void Cancel(uint64_t reqId) {

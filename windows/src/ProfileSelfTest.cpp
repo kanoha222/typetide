@@ -428,6 +428,17 @@ void TestLegacyBackends() {
           api.configuration.profiles[0].backend == TranslationBackend::OpenAI &&
           api.configuration.profiles[0].model == "explicit-api-model",
           "API backend and explicit model migrated");
+    legacy["openAIModel"] = "   ";
+    const auto blank = profiles::store::Decode(json::Value(legacy));
+    Check(blank.state == ProfileLoadState::MigratedLegacy && profiles::Validate(blank.configuration).ok &&
+          blank.configuration.profiles[0].model == "gpt-5-mini",
+          "a blank legacy API model migrates to the old default instead of rejecting the file");
+    legacy["backend"] = "ollama";
+    legacy["ollamaModel"] = "";
+    const auto blankOllama = profiles::store::Decode(json::Value(legacy));
+    Check(blankOllama.state == ProfileLoadState::MigratedLegacy &&
+          blankOllama.configuration.profiles[1].model == "qwen2.5:3b",
+          "a blank legacy Ollama model migrates to the old default");
     const auto defaults = profiles::store::Decode(json::Value(json::Object{}));
     Check(defaults.state == ProfileLoadState::MigratedLegacy &&
           profiles::Validate(defaults.configuration).ok,

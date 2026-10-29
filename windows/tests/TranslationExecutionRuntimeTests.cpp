@@ -124,7 +124,8 @@ void TestPrepareMessages() {
     const PrepareStatus failures[] = {PrepareStatus::NotReady,        PrepareStatus::CapabilityRejected,
                                       PrepareStatus::TemplateInvalid, PrepareStatus::EndpointMissing,
                                       PrepareStatus::ModelMissing,    PrepareStatus::EndpointInvalid,
-                                      PrepareStatus::EndpointInsecure, PrepareStatus::KeyMissing};
+                                      PrepareStatus::EndpointInsecure, PrepareStatus::KeyMissing,
+                                      PrepareStatus::KeyInvalid};
     const TranslationBackend backends[] = {TranslationBackend::BuiltIn, TranslationBackend::Ollama,
                                            TranslationBackend::OpenAI};
     for (TranslationBackend backend : backends)

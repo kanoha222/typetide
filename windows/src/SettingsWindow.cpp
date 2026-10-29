@@ -209,10 +209,15 @@ void updateFirstRunCompletion() {
         s.save();
     }
     if (ctrl(kFirstRunHint)) {
-        SetWindowTextW(ctrl(kFirstRunHint), s.hasCompletedFirstLaunch
-            ? L"Setup checks complete. TypeTide is ready."
-            : L"First run: test the bound models on the Translation page and verify the shortcuts "
-              L"before relying on TypeTide.");
+        // A read-only store keeps defaults in memory and refuses every save: say so first.
+        const std::wstring text = s.isReadOnly()
+            ? L"Settings could not be loaded (" + util::Widen(s.storageError()) +
+                  L"). TypeTide is running with defaults and will not save changes."
+            : s.hasCompletedFirstLaunch
+                ? std::wstring(L"Setup checks complete. TypeTide is ready.")
+                : std::wstring(L"First run: test the bound models on the Translation page and verify the "
+                               L"shortcuts before relying on TypeTide.");
+        SetWindowTextW(ctrl(kFirstRunHint), text.c_str());
     }
 }
 
@@ -492,6 +497,7 @@ void syncCommitted() {
     const SettingsData& committed = s.committedData();
     const std::wstring endpoint = util::Widen(committed.ollamaHost) + L":" + std::to_wstring(committed.ollamaPort);
     if (endpoint != g.ollamaEndpoint) {
+        if (!g.ollamaEndpoint.empty()) ollamamodels::CancelPreload();  // still warming the old host
         g.ollamaEndpoint = endpoint;
         ++g.ollamaVersion;
         g.installed.reset();
@@ -895,14 +901,22 @@ void onCommand(int id, int code) {
         if (code != CBN_SELCHANGE) return;
         applyCloudProviderPreset((int)SendMessageW(ctrl(kOaiProvider), CB_GETCURSEL, 0, 0));
         break;
-    case kOaiUrl:
-        if (code != EN_CHANGE) return;
-        s.openAIBaseURL = util::Narrow(editText(ctrl(kOaiUrl)));
-        break;
-    case kOaiKey:
+    case kOaiUrl: {
+        // Committed when the field is left, so a half-typed host is never used by a trigger.
         if (code != EN_KILLFOCUS) return;
-        s.openAIKey = util::Narrow(editText(ctrl(kOaiKey)));
+        const std::string url = util::Narrow(util::Trim(editText(ctrl(kOaiUrl))));
+        if (url == s.openAIBaseURL) return;
+        s.openAIBaseURL = url;
+        SendMessageW(ctrl(kOaiProvider), CB_SETCURSEL, cloudProviderIndex(url), 0);
         break;
+    }
+    case kOaiKey: {
+        if (code != EN_KILLFOCUS) return;
+        const std::string key = util::Narrow(util::Trim(editText(ctrl(kOaiKey))));
+        if (key == s.openAIKey) return;
+        s.openAIKey = key;
+        break;
+    }
     case kTestBound:
         testBoundModels();
         save = false;
@@ -1054,6 +1068,15 @@ void onCommand(int id, int code) {
     case kSkipAdd: {
         std::wstring app = util::Trim(editText(ctrl(kSkipEdit)));
         if (app.empty()) { save = false; break; }
+        // The settings file allows 100 entries of up to 260 characters; more would fail every save.
+        if (s.skipApps.size() >= 100 || app.size() > 260) {
+            MessageBoxW(g.hwnd, s.skipApps.size() >= 100
+                                    ? L"TypeTide can exclude up to 100 apps. Remove one first."
+                                    : L"That name is too long. Enter the program's file name, such as notepad.exe.",
+                        L"TypeTide — excluded apps", MB_OK | MB_ICONWARNING);
+            save = false;
+            break;
+        }
         for (auto& e : s.skipApps)
             if (util::ToLower(e) == util::ToLower(app)) { save = false; break; }
         if (!save) break;
@@ -1242,6 +1265,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(wp) != WA_INACTIVE) syncCommitted();  // e.g. back from the profile editor
         break;
     case WM_CLOSE:
+        // Edits still in a focused connection field are committed like a focus change.
+        onCommand(kOaiUrl, EN_KILLFOCUS);
+        onCommand(kOaiKey, EN_KILLFOCUS);
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:

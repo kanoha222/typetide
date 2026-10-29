@@ -31,8 +31,12 @@ struct PasteGuard {
     std::shared_ptr<const std::atomic<uint64_t>> live;
     uint64_t session = 0;
     std::uintptr_t target = 0;  // foreground window when the text was captured (0 = unknown)
-    /// True while the session may still commit input into `foreground`.
-    bool allows(std::uintptr_t foreground) const;
+    std::uintptr_t focus = 0;   // its focused control then (0 = not known, only the window is checked)
+    /// The session is still the latest one and was not cancelled.
+    bool isCurrent() const;
+    /// True while the session may still commit input into `foreground` whose focused control is
+    /// `focused`. An unknown target never allows input.
+    bool allows(std::uintptr_t foreground, std::uintptr_t focused = 0) const;
 };
 
 class Ledger {
@@ -65,7 +69,7 @@ public:
     /// never affects a newer one; AppExit always cancels the current session.
     std::vector<uint64_t> close(uint64_t session, CloseReason reason);
 
-    PasteGuard pasteGuard(uint64_t session, std::uintptr_t target) const;
+    PasteGuard pasteGuard(uint64_t session, std::uintptr_t target, std::uintptr_t focus = 0) const;
 
     uint64_t current() const { return current_; }
 

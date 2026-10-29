@@ -123,8 +123,12 @@ PrepareStatus OpenAIEndpoint(const ExecutionContext& context, std::wstring* fina
                         info.kind == EndpointKind::RemoteHttp;
     if (!parsed || info.hasQueryOrFragment) return PrepareStatus::EndpointInvalid;
     if (info.kind == EndpointKind::RemoteHttp) return PrepareStatus::EndpointInsecure;
-    if (info.kind == EndpointKind::Https && context.connection.openAIKey.empty())
-        return PrepareStatus::KeyMissing;
+    const std::string& key = context.connection.openAIKey;
+    if (info.kind == EndpointKind::Https && key.empty()) return PrepareStatus::KeyMissing;
+    // The key becomes an HTTP header value: printable ASCII only, never CR/LF or spaces.
+    for (const char c : key)
+        if (static_cast<unsigned char>(c) < 0x21 || static_cast<unsigned char>(c) > 0x7E)
+            return PrepareStatus::KeyInvalid;
     *finalUrl = info.url + L"/chat/completions";
     return PrepareStatus::Ok;
 }
@@ -133,17 +137,11 @@ PrepareStatus OpenAIEndpoint(const ExecutionContext& context, std::wstring* fina
 // explicit port, path, query or fragment in the host is refused instead of being joined.
 // Remote HTTP stays allowed for Ollama (it never carries an API key).
 PrepareStatus OllamaEndpoint(const ExecutionContext& context, std::wstring* finalUrl) {
-    const std::string host = TrimTrailingSlashes(context.connection.ollamaHost);
-    if (host.empty()) return PrepareStatus::EndpointMissing;
+    if (TrimTrailingSlashes(context.connection.ollamaHost).empty()) return PrepareStatus::EndpointMissing;
     if (profiles::IsBlankText(context.profile.model)) return PrepareStatus::ModelMissing;
-    const int port = context.connection.ollamaPort;
-    if (port < 1 || port > 65535) return PrepareStatus::EndpointInvalid;
-    const EndpointInfo info = ClassifyEndpoint(util::Widen(host));
-    const bool usable = info.kind == EndpointKind::LoopbackHttp || info.kind == EndpointKind::Https ||
-                        info.kind == EndpointKind::RemoteHttp;
-    if (!usable || info.explicitPort || info.hasPath || info.hasQueryOrFragment)
-        return PrepareStatus::EndpointInvalid;
-    *finalUrl = info.url + L":" + std::to_wstring(port) + L"/api/generate";
+    const std::optional<std::wstring> base = OllamaBase(context.connection.ollamaHost, context.connection.ollamaPort);
+    if (!base) return PrepareStatus::EndpointInvalid;
+    *finalUrl = *base + L"/api/generate";
     return PrepareStatus::Ok;
 }
 
@@ -310,6 +308,16 @@ PreparedRequest Prepare(const ExecutionContext& context, const std::wstring& tex
     return request;
 }
 
+std::optional<std::wstring> OllamaBase(const std::string& host, int port) {
+    const std::string trimmed = TrimTrailingSlashes(host);
+    if (trimmed.empty() || port < 1 || port > 65535) return std::nullopt;
+    const EndpointInfo info = ClassifyEndpoint(util::Widen(trimmed));
+    const bool usable = info.kind == EndpointKind::LoopbackHttp || info.kind == EndpointKind::Https ||
+                        info.kind == EndpointKind::RemoteHttp;
+    if (!usable || info.explicitPort || info.hasPath || info.hasQueryOrFragment) return std::nullopt;
+    return info.url + L":" + std::to_wstring(port);
+}
+
 ContextPtr FreezeBound(const ProfileConfiguration& configuration, ProfileEntry entry,
                        ShortcutAction action, ConnectionSnapshot connection) {
     const TranslationProfile* profile = profiles::BoundProfile(configuration, entry);
@@ -345,6 +353,9 @@ std::wstring PrepareErrorMessage(PrepareStatus status, TranslationBackend backen
         return L"Refusing plain HTTP to a remote API endpoint. Use HTTPS or a local endpoint.";
     case PrepareStatus::KeyMissing:
         return L"Missing cloud API key";
+    case PrepareStatus::KeyInvalid:
+        return L"The cloud API key contains spaces, line breaks or other characters an API key cannot have. "
+               L"Re-enter it in Settings → Translation.";
     case PrepareStatus::NotReady:
         break;
     }

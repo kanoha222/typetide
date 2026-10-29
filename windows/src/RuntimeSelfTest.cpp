@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <future>
 #include <memory>
 #include <optional>
@@ -434,6 +435,40 @@ void testConnectionCheck(const MockEnv& env) {
     check(clipboardSet && synthetic, "tests send only fixed synthetic text, never the clipboard");
 }
 
+void testLegacyKeyMigration() {
+    printf("[legacy plaintext key migration]\n");
+    const std::wstring parent = EnvValue(L"TYPETIDE_DATA_DIR");
+    const std::wstring dir = parent + L"\\legacy-migration";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    SetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", dir.c_str());
+    const std::string legacyKey = "synthetic-legacy-plaintext-key";
+    {
+        std::ofstream out(dir + L"\\settings.json", std::ios::binary | std::ios::trunc);
+        out << "{\"backend\":\"openai\",\"openAIBaseURL\":\"https://api.example.test/v1\","
+               "\"openAIModel\":\"synthetic-model\",\"openAIKey\":\"" << legacyKey << "\"}";
+    }
+    auto fileText = [&dir] {
+        std::ifstream in(dir + L"\\settings.json", std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    Settings legacy;
+    legacy.load();
+    check(!legacy.isReadOnly() && legacy.hasLegacyPlaintextKey() && legacy.snapshot().openAIKey == legacyKey,
+          "a legacy file with a plaintext key loads and is flagged for migration");
+    std::string error;
+    check(legacy.migrateLegacyPlaintextKey(&error), "the start-up migration commits", error);
+    const std::string migrated = fileText();
+    check(migrated.find(legacyKey) == std::string::npos && migrated.find("schemaVersion") != std::string::npos,
+          "settings.json is rewritten without the key");
+    check(!legacy.hasLegacyPlaintextKey() && legacy.migrateLegacyPlaintextKey(&error),
+          "a second migration has nothing to do");
+    Settings reloaded;
+    reloaded.load();
+    check(!reloaded.hasLegacyPlaintextKey() && reloaded.snapshot().openAIKey == legacyKey,
+          "the key is read back from the credential store");
+    SetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", parent.c_str());
+}
+
 void testReplaceGuards() {
     printf("[replacement guards]\n");
     const std::wstring original = L"CLIPBOARD_BEFORE_REPLACE";
@@ -488,6 +523,7 @@ int RunRuntimeSelfTests() {
         return 2;
     }
     translator::ClearCacheForTesting();
+    const std::optional<std::wstring> userClipboard = clipboard::GetText();  // restored at the end
     testPresetOpenAI(env);
     testExactOutput(env);
     testOllamaCustom(env);
@@ -503,6 +539,8 @@ int RunRuntimeSelfTests() {
     testConnectionCheck(env);
     testReplaceGuards();
     testEpochBackfill(env);
+    testLegacyKeyMigration();
+    if (userClipboard) clipboard::SetText(*userClipboard);
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nall runtime tests passed\n", g_failures);
     return g_failures ? 1 : 0;
 }

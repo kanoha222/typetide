@@ -80,6 +80,7 @@ void Settings::adopt(SettingsData data, std::string ref, bool legacyOrigin, bool
     connectionEpoch_ = epoch;
     legacyOrigin_ = legacyOrigin;
     versioned_ = versioned;
+    legacyPlaintextKey_ = false;
     storageState_ = StorageState::Ready;
     storageError_.clear();
     storageWarning_.clear();
@@ -102,6 +103,7 @@ void Settings::load() {
             else decoded.error = "Invalid settings JSON";
         }
         bool legacyOrigin = false;
+        const bool plaintextKey = decoded.legacy && !decoded.data.openAIKey.empty();
         if (decoded.state == StorageState::Ready) ResolveCredential(decoded, legacyOrigin);
         if (decoded.state != StorageState::Ready) {
             storageState_ = decoded.state;
@@ -118,6 +120,7 @@ void Settings::load() {
         prepared.adopt(std::move(decoded.data), std::move(decoded.ref), legacyOrigin,
                        !file.missing && !decoded.legacy, connectionEpoch_ + (changed ? 1 : 0));
         *this = std::move(prepared); // Load never automatically migrates/writes a legacy file.
+        legacyPlaintextKey_ = plaintextKey; // ...but start-up calls migrateLegacyPlaintextKey().
     } catch (...) {
         storageState_ = StorageState::IoError;
         storageError_ = "Cannot load settings safely";
@@ -126,6 +129,18 @@ void Settings::load() {
 }
 
 bool Settings::save(std::string* error) { return commit(*this, error); }
+
+bool Settings::migrateLegacyPlaintextKey(std::string* error) {
+    if (!legacyPlaintextKey_ || isReadOnly()) return !legacyPlaintextKey_;
+    try {
+        Settings candidate = *this;
+        static_cast<SettingsData&>(candidate) = committed_;  // never commits unrelated drafts
+        return commit(candidate, error);
+    } catch (...) {
+        if (error) *error = "Cannot prepare the legacy credential migration";
+        return false;
+    }
+}
 
 bool Settings::save(std::string* error) const {
     if (isReadOnly()) {

@@ -109,6 +109,7 @@ enum class PrepareStatus {
     EndpointInvalid,     // malformed/unsafe authority, bad port, query/fragment, Ollama host+port clash
     EndpointInsecure,    // OpenAI over remote HTTP
     KeyMissing,          // OpenAI over HTTPS without a key
+    KeyInvalid,          // a key with spaces, line breaks or other non-printable-ASCII bytes
 };
 
 struct PreparedRequest {
@@ -155,5 +156,10 @@ std::optional<std::wstring> DeliveredOutput(const TranslationProfile& profile, c
 
 /// Fixed user-facing text for a failed Prepare. It never echoes URLs, keys or prompt text.
 std::wstring PrepareErrorMessage(PrepareStatus status, TranslationBackend backend);
+
+/// "scheme://host:port" of an Ollama server under the same rules translation requests use
+/// (scheme://authority only, no port, path, query or fragment in `host`; port 1..65535), or
+/// nullopt when the host is not usable. Model discovery and preload build their URLs from it.
+std::optional<std::wstring> OllamaBase(const std::string& host, int port);
 
 } // namespace execution

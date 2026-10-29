@@ -22,7 +22,12 @@ struct Capture {
     bool hasAnchor = false;
     /// 取词时的前台窗口：替换只粘贴回它（换了前台窗口就放弃）
     HWND window = nullptr;
+    /// 取词时该窗口里有焦点的控件：替换前再核对一次（同一窗口换了输入框也放弃）
+    HWND focus = nullptr;
 };
+
+/// The control that has the keyboard focus in `foreground`'s GUI thread (nullptr if unknown).
+HWND FocusedControl(HWND foreground);
 
 /// 读模式 UIA 取词（仅 UIA，不动剪贴板；主线程）。
 std::optional<Capture> UIAReadSelection();

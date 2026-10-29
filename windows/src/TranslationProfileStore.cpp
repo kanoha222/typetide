@@ -169,10 +169,23 @@ ProfileLoadResult DecodeLegacy(const json::Object& root) {
     else if (backendCode == "ollama") backend = TranslationBackend::Ollama;
 
     std::string model;
+    std::string legacyDefault;  // the old app's default for that backend
     if (backend == TranslationBackend::OpenAI) {
-        model = GetString(root, "openAIModel", "gpt-5-mini");
+        legacyDefault = "gpt-5-mini";
+        model = GetString(root, "openAIModel", legacyDefault);
     } else if (backend == TranslationBackend::Ollama) {
-        model = GetString(root, "ollamaModel", "qwen2.5:3b");
+        legacyDefault = "qwen2.5:3b";
+        model = GetString(root, "ollamaModel", legacyDefault);
+    }
+    // Old builds saved every keystroke of the model field, so a blank (or otherwise unusable)
+    // model was possible; it never worked. Use the old default instead of rejecting the file.
+    if (backend != TranslationBackend::BuiltIn) {
+        TranslationProfile probe;
+        probe.id = "legacy-model-check";
+        probe.name = "Legacy model check";
+        probe.backend = backend;
+        probe.model = model;
+        if (!profiles::Validate(probe).ok) model = legacyDefault;
     }
 
     TranslationProfile readProfile = MakeLegacyProfile(

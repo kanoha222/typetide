@@ -50,6 +50,9 @@ LRESULT CALLBACK App::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 bool App::init(HINSTANCE inst) {
+    // A legacy settings.json kept the API key in plain text: move it to the credential store now.
+    if (!Settings::shared().migrateLegacyPlaintextKey())
+        util::Log("settings: legacy plaintext key migration failed; the file keeps the key");
     WNDCLASSW wc{};
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
@@ -90,7 +93,10 @@ bool App::init(HINSTANCE inst) {
 
     // 预加载已绑定且已安装的 Ollama 模型；未安装的模型只在设置里提示，从不自动替换。
     // 网络在工作线程，结果回到主线程（WM_APP_MODELS）。
-    ollamamodels::FetchInstalledAsync(hwnd_, WM_APP_MODELS, {0, s.connectionEpoch()});
+    bool boundOllama = false;
+    for (const profilestatus::Probe& probe : profilestatus::BoundProbes(s.committedData().profileConfig))
+        boundOllama = boundOllama || probe.backend == TranslationBackend::Ollama;
+    if (boundOllama) ollamamodels::FetchInstalledAsync(hwnd_, WM_APP_MODELS, {0, s.connectionEpoch()});
 
     return true;
 }
@@ -178,6 +184,8 @@ void App::openProfiles() {
 }
 
 void App::quit() {
+    quitting_ = true;
+    ++triggerSeq_;  // a capture still running is dropped when it arrives
     // AppExit 也取消没有弹窗的当前会话（直接替换、已点 Replace 的粘贴）：它们的粘贴会在
     // 下一道守卫处放弃并还原剪贴板。
     PopupWindow::shared().close(session::CloseReason::AppExit);
@@ -247,6 +255,7 @@ App::Trigger App::beginTrigger(ProfileEntry entry, ShortcutAction action) {
 }
 
 void App::performEntry(ProfileEntry entry, ShortcutAction action) {
+    if (quitting_) return;  // a hotkey message still queued when Quit was chosen
     // 动作决定弹窗还是替换
     Trigger trigger = beginTrigger(entry, action);
     if (IsReplaceAction(action)) handleRewrite(std::move(trigger));
@@ -283,10 +292,19 @@ void App::handleRewrite(Trigger trigger) {
     captureFallbackAsync(WM_APP_REWRITE_CAPTURED, std::move(trigger));
 }
 
+// The clipboard-fallback capture is asynchronous: supersede older work now, so a translation
+// that finishes meanwhile can no longer paste over the selection this trigger is reading.
+void App::supersedeBeforeCapture() {
+    beginUserTranslation();
+    PopupWindow::shared().close(session::CloseReason::Superseded);
+}
+
 void App::captureFallbackAsync(UINT message, Trigger trigger) {
+    supersedeBeforeCapture();
     HWND hwnd = hwnd_;
     const HWND target = GetForegroundWindow();  // 触发时的前台窗口：只从它复制、只粘贴回它
-    std::thread([hwnd, message, target, trigger = std::move(trigger)] {
+    const HWND focus = capture::FocusedControl(target);
+    std::thread([hwnd, message, target, focus, trigger = std::move(trigger)] {
         auto copied = capture::ClipboardFallbackCopy(target);
         if (!copied) {
             diagnostics::Record("selectionCapture", "failure");
@@ -299,6 +317,7 @@ void App::captureFallbackAsync(UINT message, Trigger trigger) {
         captured->cap.anchor = capture::CursorAnchor();
         captured->cap.hasAnchor = true;
         captured->cap.window = target;
+        captured->cap.focus = focus;
         captured->trigger = trigger;
         if (!PostMessageW(hwnd, message, 0, (LPARAM)captured)) delete captured;
     }).detach();
@@ -347,6 +366,7 @@ void App::openPopupSession(const capture::Capture& cap, execution::ContextPtr co
     sessionContext_ = std::move(context);
     sessionText_ = cap.text;
     sessionWindow_ = cap.window;
+    sessionFocus_ = cap.focus;
     currentReplaceSelectAll_ = replaceSelectAll;
 
     // show() 先以 Superseded 关掉旧弹窗；旧会话此时已过期，它的关闭不会影响新会话。
@@ -381,7 +401,8 @@ void App::onPopupReplace(uint64_t sessionId) {
         execution::DeliveredOutput(sessionContext_->profile, PopupWindow::shared().translation());
     if (!text) return;
     session::PasteGuard guard =
-        ledger_.pasteGuard(sessionId, reinterpret_cast<std::uintptr_t>(sessionWindow_));
+        ledger_.pasteGuard(sessionId, reinterpret_cast<std::uintptr_t>(sessionWindow_),
+                           reinterpret_cast<std::uintptr_t>(sessionFocus_));
     const bool selectAll = currentReplaceSelectAll_;
     PopupWindow::shared().close(session::CloseReason::ReplaceCommit);
     replacer::ReplaceAsync(std::move(*text), selectAll, std::move(guard));
@@ -441,6 +462,7 @@ void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr con
     HWND hwnd = hwnd_;
     const bool wholeField = cap.isWholeField;
     const HWND window = cap.window;
+    const HWND focus = cap.focus;
     const std::wstring original = cap.text;
     const uint64_t requestId = translator::Stream(
         context, cap.text, std::nullopt,
@@ -448,7 +470,7 @@ void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr con
             std::lock_guard lock(state->mutex);
             state->result += delta;
         },
-        [hwnd, state, context, ticket, wholeField, anchor, window, original, target](
+        [hwnd, state, context, ticket, wholeField, anchor, window, focus, original, target](
             uint64_t, bool ok, const std::wstring& error) {
             std::lock_guard lock(state->mutex);
             std::optional<std::wstring> text =
@@ -461,6 +483,7 @@ void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr con
                 wholeField,
                 anchor,
                 window,
+                focus,
                 original,
                 target,
             };
@@ -485,6 +508,7 @@ void App::bindProfile(ProfileEntry entry, const std::string& profileId) {
     std::string error;
     if (profilebinding::Commit(Settings::shared(), entry, profileId, &error)) {  // 只影响之后的触发
         SettingsWindow::profilesChanged();
+        profileswindow::committedChanged();
         return;
     }
     const std::wstring message = L"The profile binding could not be changed.\n\n" + util::Widen(error);
@@ -528,7 +552,8 @@ void App::onRewriteDone(RewriteResult& result) {
     if (result.ok) {
         replacer::ReplaceAsync(std::move(result.text), result.isWholeField,
                                ledger_.pasteGuard(result.ticket.session,
-                                                  reinterpret_cast<std::uintptr_t>(result.window)));
+                                                  reinterpret_cast<std::uintptr_t>(result.window),
+                                                  reinterpret_cast<std::uintptr_t>(result.focus)));
     } else {
         showErrorPopup(result.original, result.target, result.anchor, result.error);
     }
@@ -541,7 +566,7 @@ void App::onModelsListed(const ollamamodels::Discovery& discovery) {
 }
 
 void App::onCaptured(UINT message, CapturedSelection& captured) {
-    if (captured.trigger.seq != triggerSeq_) return;  // 取词晚到，期间已有更新的触发
+    if (quitting_ || captured.trigger.seq != triggerSeq_) return;  // 取词晚到，期间已有更新的触发
     if (message == WM_APP_READ_CAPTURED)
         presentRead(captured.cap, std::move(captured.trigger.context));
     else

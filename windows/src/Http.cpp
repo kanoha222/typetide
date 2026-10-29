@@ -2,6 +2,7 @@
 #include "HttpUrl.h"
 #include <windows.h>
 #include <winhttp.h>
+#include <wchar.h>
 #include <vector>
 
 namespace http {
@@ -9,6 +10,13 @@ namespace http {
 namespace {
 
 constexpr size_t kMaxBufferedResponse = 8 * 1024 * 1024;
+constexpr size_t kMaxStreamedResponse = 16 * 1024 * 1024;  // far above any translation
+
+/// Loopback traffic (local Ollama / API servers) never goes through a configured proxy.
+bool isLoopbackHost(const std::wstring& host) {
+    return _wcsicmp(host.c_str(), L"localhost") == 0 || host == L"127.0.0.1" || host == L"[::1]" ||
+           host == L"::1";
+}
 
 struct Handle {
     HINTERNET h = nullptr;
@@ -43,8 +51,9 @@ Result request(const std::wstring& url,
     }
     const std::wstring object = (parts.path.empty() ? std::wstring(L"/") : parts.path) + parts.extra;
 
-    Handle session(WinHttpOpen(L"TypeTide/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                               WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+    const DWORD access = isLoopbackHost(parts.host) ? WINHTTP_ACCESS_TYPE_NO_PROXY
+                                                    : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;
+    Handle session(WinHttpOpen(L"TypeTide/1.0", access, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
     if (!session) { r.error = lastError("WinHttpOpen"); return r; }
 
     // 连接失败应尽快可恢复；单次 90 秒无响应后让 UI 提供 Retry。
@@ -85,6 +94,7 @@ Result request(const std::wstring& url,
     r.status = (int)status;
 
     std::vector<char> buf(16 * 1024);
+    size_t streamed = 0;
     for (;;) {
         if (cancel && cancel->load()) { r.error = "Cancelled"; return r; }
         DWORD avail = 0;
@@ -98,6 +108,11 @@ Result request(const std::wstring& url,
             if (got == 0) break;
             avail -= got;
             if (onChunk && status >= 200 && status < 300) {
+                streamed += got;
+                if (streamed > kMaxStreamedResponse) {
+                    r.error = "Response too large";
+                    return r;
+                }
                 (*onChunk)(buf.data(), got);
             } else {
                 if (r.body.size() + got > kMaxBufferedResponse) {
@@ -128,8 +143,8 @@ Result PostStream(const std::wstring& url, const std::string& body,
     return request(url, L"POST", body, extraHeaders, &onChunk, &cancel, /*followRedirects=*/false);
 }
 
-Result Get(const std::wstring& url, const std::wstring& extraHeaders) {
-    return request(url, L"GET", {}, extraHeaders, nullptr, nullptr, /*followRedirects=*/true);
+Result Get(const std::wstring& url, const std::wstring& extraHeaders, bool followRedirects) {
+    return request(url, L"GET", {}, extraHeaders, nullptr, nullptr, followRedirects);
 }
 
 } // namespace http

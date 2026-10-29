@@ -36,6 +36,9 @@ void FetchInstalledAsync(HWND notify, UINT message, profilestatus::Ticket ticket
 /// call supersedes a preload still in progress.
 void PreloadAsync(const std::vector<std::wstring>* installed = nullptr);
 
+/// Main thread: stops a preload in progress (the Ollama endpoint or the bindings changed).
+void CancelPreload();
+
 /// Main thread: reacts to a discovered model list. It never changes or saves settings (a
 /// missing model stays visible as missing); it only preloads bound, installed models.
 void OnDiscovered(const std::vector<std::wstring>& installed);
