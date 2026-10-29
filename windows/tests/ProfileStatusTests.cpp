@@ -42,8 +42,25 @@ void TestRoutes() {
           "Ollama on 127.0.0.1 is local");
     execution::ConnectionSnapshot remote = connection;
     remote.ollamaHost = "http://192.0.2.10";
-    Check(RouteOf(MakeProfile(TranslationBackend::Ollama), remote) == Route::Network,
-          "Ollama on another computer is a network route");
+    Check(RouteOf(MakeProfile(TranslationBackend::Ollama), remote) == Route::NetworkUnencrypted,
+          "Ollama on another computer over plain HTTP is an unencrypted network route");
+    Check(RequiresPreview(MakeProfile(TranslationBackend::Ollama), remote),
+          "replacing from an unencrypted network route always shows the popup first");
+    execution::ConnectionSnapshot encrypted = connection;
+    encrypted.ollamaHost = "https://ollama.example.test";
+    Check(RouteOf(MakeProfile(TranslationBackend::Ollama), encrypted) == Route::Network &&
+              !RequiresPreview(MakeProfile(TranslationBackend::Ollama), encrypted),
+          "Ollama on another computer over HTTPS is a network route without a forced preview");
+    Check(!RequiresPreview(MakeProfile(TranslationBackend::Ollama), connection) &&
+              !RequiresPreview(MakeProfile(TranslationBackend::OpenAI), connection) &&
+              !RequiresPreview(MakeProfile(TranslationBackend::BuiltIn), remote),
+          "local, cloud and built-in routes keep the configured preview setting");
+    EntryStatus unencrypted;
+    unencrypted.entry = ProfileEntry::Selection;
+    unencrypted.bound = true;
+    unencrypted.profile = MakeProfile(TranslationBackend::Ollama);
+    unencrypted.route = Route::NetworkUnencrypted;
+    Check(Contains(SummaryLine(unencrypted), L"unencrypted"), "the summary says the route is unencrypted");
     remote.ollamaHost = "http://localhost";
     Check(RouteOf(MakeProfile(TranslationBackend::Ollama), remote) == Route::Local, "Ollama on localhost is local");
     Check(RouteOf(MakeProfile(TranslationBackend::OpenAI), connection) == Route::Cloud,

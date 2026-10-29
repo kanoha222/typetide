@@ -120,6 +120,17 @@ void TestDeliveredOutput() {
     }
 }
 
+void TestReplacementText() {
+    using execution::ReplacementText;
+    Check(ReplacementText(L"  line one\n\tline two\r\n\n", L"selected") == L"  line one\n\tline two",
+          "Replace drops trailing line breaks but keeps indentation and inner line breaks");
+    Check(ReplacementText(L"  line one\n", L"selected line\n") == L"  line one\n" &&
+              ReplacementText(L"text\r\n", L"selected\r\n") == L"text\r\n",
+          "a selection that ended with a line break keeps the output exactly");
+    Check(ReplacementText(L"text  ", L"selected") == L"text  " && ReplacementText(L"text", L"") == L"text",
+          "trailing spaces stay; only line breaks are dropped");
+}
+
 void TestPrepareMessages() {
     const PrepareStatus failures[] = {PrepareStatus::NotReady,        PrepareStatus::CapabilityRejected,
                                       PrepareStatus::TemplateInvalid, PrepareStatus::EndpointMissing,
@@ -144,6 +155,7 @@ void TestPrepareMessages() {
 void RunRuntimeContractTests() {
     TestEntryBinding();
     TestSwappedAndSharedBindings();
+    TestReplacementText();
     TestActionNotSlotDecidesDirection();
     TestUnresolvedBinding();
     TestFrozenCopy();

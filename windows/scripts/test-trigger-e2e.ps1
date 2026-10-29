@@ -343,7 +343,9 @@ function Test-PopupAndReplace {
     $from = Record-Count
     Send-Combo @($VK_MENU) 0x52  # Alt+R
     $replaced = (Replaced-Text) -replace "`r`n", "`n"
-    Check ($replaced -eq $Exact) "direct replacement keeps the custom output exactly" "got '$(Visible-Text $replaced)'"
+    Check ($replaced -eq $Exact.TrimEnd("`n")) `
+        "direct replacement keeps the custom output's indentation and tab, without the trailing line break" `
+        "got '$(Visible-Text $replaced)'"
     $requests = @(Translations $from)
     Check ($requests.Count -eq 1 -and $requests[0].model -eq 'mock-exact') "shortcut 2 ran the profile bound to it" `
         "models '$(Models $from)'"

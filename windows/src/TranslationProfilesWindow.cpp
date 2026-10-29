@@ -293,6 +293,9 @@ std::wstring routeText(const TranslationProfile& profile) {
                                                               : L"Local: runs on the API server on this PC.";
     case profilestatus::Route::Network:
         return L"Network: selected text is sent to the configured Ollama host.";
+    case profilestatus::Route::NetworkUnencrypted:
+        return L"Network, unencrypted: selected text is sent to the Ollama host as plain text. "
+               L"Replace always shows the popup first.";
     case profilestatus::Route::Cloud:
         return L"Cloud: selected text is sent to the configured API endpoint.";
     }

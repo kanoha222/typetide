@@ -9,8 +9,8 @@ namespace {
 
 constexpr ProfileEntry kEntries[] = {ProfileEntry::Shortcut1, ProfileEntry::Shortcut2, ProfileEntry::Selection};
 
-bool IsLoopbackHttp(const std::string& url) {
-    return execution::ClassifyEndpoint(util::Widen(url)).kind == execution::EndpointKind::LoopbackHttp;
+execution::EndpointKind KindOf(const std::string& url) {
+    return execution::ClassifyEndpoint(util::Widen(url)).kind;
 }
 
 } // namespace
@@ -19,12 +19,21 @@ Route RouteOf(const TranslationProfile& profile, const execution::ConnectionSnap
     switch (profile.backend) {
     case TranslationBackend::BuiltIn:
         return Route::Local;
-    case TranslationBackend::Ollama:
-        return IsLoopbackHttp(connection.ollamaHost) ? Route::Local : Route::Network;
+    case TranslationBackend::Ollama: {
+        const execution::EndpointKind kind = KindOf(connection.ollamaHost);
+        return kind == execution::EndpointKind::LoopbackHttp ? Route::Local
+             : kind == execution::EndpointKind::RemoteHttp   ? Route::NetworkUnencrypted
+                                                             : Route::Network;
+    }
     case TranslationBackend::OpenAI:
-        return IsLoopbackHttp(connection.openAIBaseURL) ? Route::Local : Route::Cloud;
+        return KindOf(connection.openAIBaseURL) == execution::EndpointKind::LoopbackHttp ? Route::Local
+                                                                                        : Route::Cloud;
     }
     return Route::Cloud;
+}
+
+bool RequiresPreview(const TranslationProfile& profile, const execution::ConnectionSnapshot& connection) {
+    return RouteOf(profile, connection) == Route::NetworkUnencrypted;
 }
 
 bool IsInstalled(const std::vector<std::wstring>& installed, const std::string& model) {
@@ -101,6 +110,7 @@ std::wstring RouteLabel(Route route) {
     switch (route) {
     case Route::Local: return L"local";
     case Route::Network: return L"network: selected text goes to another computer";
+    case Route::NetworkUnencrypted: return L"network, unencrypted: selected text goes to another computer as plain text";
     case Route::Cloud: return L"cloud: selected text leaves this PC";
     }
     return {};

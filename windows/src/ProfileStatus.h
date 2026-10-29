@@ -17,12 +17,17 @@ namespace profilestatus {
 
 /// Where a profile's selected text is processed.
 enum class Route {
-    Local,    // built-in model, or Ollama / an OpenAI-compatible server on loopback HTTP
-    Network,  // Ollama on another computer
-    Cloud,    // an OpenAI-compatible endpoint that is not loopback HTTP
+    Local,               // built-in model, or Ollama / an OpenAI-compatible server on loopback HTTP
+    Network,             // Ollama on another computer over HTTPS
+    NetworkUnencrypted,  // Ollama on another computer over plain HTTP
+    Cloud,               // an OpenAI-compatible endpoint that is not loopback HTTP
 };
 
 Route RouteOf(const TranslationProfile& profile, const execution::ConnectionSnapshot& connection);
+
+/// Replace actions must show the popup first (user decision): the reply crosses the network
+/// unencrypted, so it could have been altered before it would be pasted into the user's app.
+bool RequiresPreview(const TranslationProfile& profile, const execution::ConnectionSnapshot& connection);
 
 /// Ollama tag matching: an exact name, or a name without a tag against its ":latest" install.
 bool IsInstalled(const std::vector<std::wstring>& installed, const std::string& model);

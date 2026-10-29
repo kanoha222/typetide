@@ -154,6 +154,11 @@ ContextPtr FreezeBound(const ProfileConfiguration& configuration, ProfileEntry e
 /// nullopt when the output is blank.
 std::optional<std::wstring> DeliveredOutput(const TranslationProfile& profile, const std::wstring& raw);
 
+/// The text a Replace pastes (user decision): `delivered` without trailing line breaks unless
+/// the replaced `source` itself ended with one, so a pasted line is never also "entered" (a
+/// terminal would run it). The popup, Copy and the cache keep the delivered text exactly.
+std::wstring ReplacementText(const std::wstring& delivered, const std::wstring& source);
+
 /// Fixed user-facing text for a failed Prepare. It never echoes URLs, keys or prompt text.
 std::wstring PrepareErrorMessage(PrepareStatus status, TranslationBackend backend);
 

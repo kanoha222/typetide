@@ -251,7 +251,11 @@ bool App::foregroundAppSkipped() const {
 
 // 取词之前冻结：取词期间保存的设置只影响之后的触发；更新的触发让尚在取词的旧触发作废。
 App::Trigger App::beginTrigger(ProfileEntry entry, ShortcutAction action) {
-    return {translator::FreezeEntry(entry, action), ++triggerSeq_, Settings::shared().rewritePreview};
+    execution::ContextPtr context = translator::FreezeEntry(entry, action);
+    // An unencrypted network reply is never pasted unseen: Replace then always previews.
+    const bool preview = Settings::shared().rewritePreview ||
+                         (context && profilestatus::RequiresPreview(context->profile, context->connection));
+    return {std::move(context), ++triggerSeq_, preview};
 }
 
 void App::performEntry(ProfileEntry entry, ShortcutAction action) {
@@ -400,6 +404,7 @@ void App::onPopupReplace(uint64_t sessionId) {
     std::optional<std::wstring> text =
         execution::DeliveredOutput(sessionContext_->profile, PopupWindow::shared().translation());
     if (!text) return;
+    text = execution::ReplacementText(*text, sessionText_);  // no trailing line break that "enters" it
     session::PasteGuard guard =
         ledger_.pasteGuard(sessionId, reinterpret_cast<std::uintptr_t>(sessionWindow_),
                            reinterpret_cast<std::uintptr_t>(sessionFocus_));
@@ -550,7 +555,7 @@ void App::onTranslationDone(const DoneMsg& done) {
 void App::onRewriteDone(RewriteResult& result) {
     if (!ledger_.accepts(result.ticket)) return;  // 已有更新的用户翻译：不再粘贴
     if (result.ok) {
-        replacer::ReplaceAsync(std::move(result.text), result.isWholeField,
+        replacer::ReplaceAsync(execution::ReplacementText(result.text, result.original), result.isWholeField,
                                ledger_.pasteGuard(result.ticket.session,
                                                   reinterpret_cast<std::uintptr_t>(result.window),
                                                   reinterpret_cast<std::uintptr_t>(result.focus)));

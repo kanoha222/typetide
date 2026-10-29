@@ -325,6 +325,14 @@ ContextPtr FreezeBound(const ProfileConfiguration& configuration, ProfileEntry e
     return Freeze(*profile, action, std::move(connection));
 }
 
+std::wstring ReplacementText(const std::wstring& delivered, const std::wstring& source) {
+    auto lineBreak = [](wchar_t c) { return c == L'\n' || c == L'\r'; };
+    if (!source.empty() && lineBreak(source.back())) return delivered;
+    std::wstring text = delivered;
+    while (!text.empty() && lineBreak(text.back())) text.pop_back();
+    return text;
+}
+
 // Trim only decides "blank"; a custom prompt owns its output formatting exactly.
 std::optional<std::wstring> DeliveredOutput(const TranslationProfile& profile, const std::wstring& raw) {
     std::wstring trimmed = util::Trim(raw);
