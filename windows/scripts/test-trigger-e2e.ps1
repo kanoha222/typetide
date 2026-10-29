@@ -390,7 +390,7 @@ function Test-SameAction {
 }
 
 function Test-ClearedShortcutAndSelection {
-    Write-Output "[a cleared shortcut, and the selection trigger]"
+    Write-Output "[a cleared shortcut, and the selection trigger (WPF host)]"
     Write-Settings 'p-popup' 'p-exact' 'smartPopup' 'smartReplace' -shortcut2Vk 0 -trigger 'auto'
     Check ($null -ne (Start-App)) "TypeTide restarts with shortcut 2 cleared and auto selection"
     Check (Prepare-Text) "cleared: source text selected"
@@ -399,21 +399,38 @@ function Test-ClearedShortcutAndSelection {
     Start-Sleep -Seconds 3
     Check ((-not (Find-Popup)) -and (Edit-Text) -eq $Source -and (Translations $from).Count -eq 0) `
         "a cleared shortcut triggers nothing"
-    Check (Prepare-Text) "selection: source text selected"
-    $rect = New-Object T+RECT
-    [T]::GetWindowRect($script:hostHwnd, [ref]$rect) | Out-Null
-    [T]::SetCursorPos($rect.Left + 120, $rect.Top + 12) | Out-Null  # the caption, not the text box
-    $from = Record-Count
-    [T]::mouse_event($MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 60
-    [T]::mouse_event($MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)  # "selection finished"
-    $popup = Popup-Text
-    if (-not $popup) {
-        Write-Output "    diagnostics: foreground $([T]::GetForegroundWindow()) host $($script:hostHwnd); edit text '$(Visible-Text (Edit-Text))'"
+    # The selection trigger reads the selection through UI Automation only (no Ctrl+C on every
+    # mouse-up), so it is exercised in the WPF host, whose text box implements TextPattern.
+    $sync = Join-Path $env:TEMP 'typetide-trigger-wpf-sync.txt'
+    $wpf = Start-Process powershell -ArgumentList '-NoProfile', '-File', "`"$PSScriptRoot\wpf-host.ps1`"", '-SyncFile', "`"$sync`"" -PassThru
+    try {
+        $wpfHwnd = Wait-For { $h = [T]::FindWindowW($NUL, 'TypeTideWpfHost'); if ($h -ne [IntPtr]::Zero) { $h } } 15000
+        Check ($null -ne $wpfHwnd -and (Ensure-Foreground $wpfHwnd)) "the WPF host is in front with its text selected"
+        if ($wpfHwnd) {
+            Start-Sleep -Milliseconds 500
+            $rect = New-Object T+RECT
+            [T]::GetWindowRect($wpfHwnd, [ref]$rect) | Out-Null
+            [T]::SetCursorPos($rect.Left + 120, $rect.Top + 12) | Out-Null  # the caption, not the text box
+            $from = Record-Count
+            [T]::mouse_event($MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 60
+            [T]::mouse_event($MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)  # "selection finished"
+            $popup = Popup-Text
+            Check ($popup -eq $Default -and (Models $from) -eq 'mock-selection') `
+                "the selection trigger runs the profile bound to Selection" "got '$(Visible-Text $popup)', models '$(Models $from)'"
+            Close-Popup | Out-Null
+        }
+    } finally {
+        Stop-Process -Id $wpf.Id -Force -ErrorAction SilentlyContinue
+        Remove-Item $sync -ErrorAction SilentlyContinue
     }
-    Check ($popup -eq $Default -and (Models $from) -eq 'mock-selection') `
-        "the selection trigger runs the profile bound to Selection" "got '$(Visible-Text $popup)', models '$(Models $from)'"
-    Close-Popup | Out-Null
+    # Diagnostics only: how each capture found its text (TYPETIDE_DEBUG log: status codes and
+    # lengths, never the text).
+    $log = Join-Path $DataDir 'debug.log'
+    if (Test-Path $log) {
+        Get-Content $log | Where-Object { $_ -match 'uiaSelection|UIAReadSelection|ClipboardFallbackCopy' } |
+            Select-Object -Last 12 | ForEach-Object { Write-Output "    debug: $_" }
+    }
 }
 
 function Test-TrayBinding {
@@ -494,6 +511,7 @@ if ((Test-Path $DataDir) -and @(Get-ChildItem -Force $DataDir).Count -gt 0) {
 }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $env:TYPETIDE_DATA_DIR = $DataDir
+$env:TYPETIDE_DEBUG = '1'  # debug.log in the data dir: status codes and lengths, never text
 
 try {
     Test-LegacySmoke 'test-e2e.ps1'
