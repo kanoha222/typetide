@@ -11,6 +11,11 @@ on:
       - windows/tests/**
       - windows/scripts/mock-openai.ps1
       - windows/scripts/test-profiles-e2e.ps1
+      - windows/scripts/test-trigger-e2e.ps1
+      - windows/scripts/test-e2e.ps1
+      - windows/scripts/test-e2e-wpf.ps1
+      - windows/scripts/edit-host.ps1
+      - windows/scripts/wpf-host.ps1
 
 permissions:
   contents: read
@@ -374,5 +379,82 @@ jobs:
         with:
           name: profile-editor-e2e-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.EDITOR_LOG_DIR }}/*
+          if-no-files-found: warn
+          retention-days: 7
+
+  trigger-path-e2e:
+    name: Trigger path end-to-end test
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Initialize runner-local test paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDir = Join-Path $env:RUNNER_TEMP 'typetide-trigger-build'
+          $logDir = Join-Path $env:RUNNER_TEMP 'typetide-trigger-logs'
+          $dataDir = Join-Path $env:RUNNER_TEMP 'typetide-trigger-data'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Value @(
+            "TRIGGER_BUILD_DIR=$buildDir"
+            "TRIGGER_LOG_DIR=$logDir"
+            "TRIGGER_DATA_DIR=$dataDir"
+          )
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure TypeTide
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:TRIGGER_LOG_DIR" | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows -B "$env:TRIGGER_BUILD_DIR" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:TRIGGER_LOG_DIR/configure.log"
+          exit $LASTEXITCODE
+
+      - name: Build TypeTide
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake --build "$env:TRIGGER_BUILD_DIR" --config Release --target TypeTide --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:TRIGGER_LOG_DIR/build.log"
+          exit $LASTEXITCODE
+
+      - name: Drive shortcuts, popup, replacement and tray against the loopback mock (failures are not masked)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $port = 8199
+          $record = Join-Path $env:TRIGGER_LOG_DIR 'mock-requests.jsonl'
+          $mock = Start-Process -FilePath pwsh -PassThru -NoNewWindow `
+              -ArgumentList '-NoProfile', '-File', 'windows/scripts/mock-openai.ps1', '-Port', "$port", '-RecordFile', $record `
+              -RedirectStandardOutput (Join-Path $env:TRIGGER_LOG_DIR 'mock.log') `
+              -RedirectStandardError (Join-Path $env:TRIGGER_LOG_DIR 'mock-error.log')
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 60 -and -not $ready; $i++) {
+              $client = [System.Net.Sockets.TcpClient]::new()
+              try { $ready = $client.ConnectAsync('127.0.0.1', $port).Wait(500) -and $client.Connected } catch {}
+              finally { $client.Dispose() }
+              if (-not $ready) { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $ready) { Write-Output 'mock provider did not start'; exit 2 }
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/scripts/test-trigger-e2e.ps1 `
+                -Exe "$env:TRIGGER_BUILD_DIR/Release/TypeTide.exe" -DataDir "$env:TRIGGER_DATA_DIR" `
+                -RecordFile $record -Port $port 2>&1 |
+                Tee-Object -FilePath "$env:TRIGGER_LOG_DIR/trigger-e2e.log"
+            exit $LASTEXITCODE
+          } finally {
+            Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Preserve configure, build, mock and trigger test logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trigger-path-e2e-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TRIGGER_LOG_DIR }}/*
           if-no-files-found: warn
           retention-days: 7
