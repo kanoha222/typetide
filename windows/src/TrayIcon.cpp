@@ -1,6 +1,9 @@
 #include "TrayIcon.h"
 #include "Settings.h"
+#include "Util.h"
 #include "resource.h"
+#include <string>
+#include <vector>
 
 namespace {
 enum MenuId : UINT {
@@ -9,8 +12,70 @@ enum MenuId : UINT {
     kMenuReadHint,
     kMenuRewriteHint,
     kMenuSettings,
+    kMenuProfiles,
     kMenuQuit,
+    kMenuBindBase = 1000,  // + slot * kBindStride + profile index
 };
+constexpr UINT kBindStride = 100;  // > profiles::MaxProfiles
+
+struct BindingSlot {
+    ProfileEntry entry;
+    std::wstring label;
+};
+
+/// Menu text for a free-form profile name: "&" would otherwise become a mnemonic.
+std::wstring menuText(const std::string& utf8) {
+    std::wstring text;
+    for (wchar_t c : util::Widen(utf8)) {
+        text += c;
+        if (c == L'&') text += L'&';
+    }
+    return text;
+}
+
+void dispatchCommand(const TrayIcon& tray, UINT cmd, const std::vector<BindingSlot>& slots,
+                     const ProfileConfiguration& config) {
+    switch (cmd) {
+    case kMenuUpdate:
+        if (tray.onOpenReleases) tray.onOpenReleases();
+        break;
+    case kMenuToggle:
+        if (tray.onToggleEnabled) tray.onToggleEnabled();
+        break;
+    case kMenuSettings:
+        if (tray.onOpenSettings) tray.onOpenSettings();
+        break;
+    case kMenuProfiles:
+        if (tray.onOpenProfiles) tray.onOpenProfiles();
+        break;
+    case kMenuQuit:
+        if (tray.onQuit) tray.onQuit();
+        break;
+    default:
+        if (cmd >= kMenuBindBase && tray.onBindProfile) {
+            const UINT slot = (cmd - kMenuBindBase) / kBindStride;
+            const UINT index = (cmd - kMenuBindBase) % kBindStride;
+            if (slot < slots.size() && index < config.profiles.size())
+                tray.onBindProfile(slots[slot].entry, config.profiles[index].id);
+        }
+        break;
+    }
+}
+
+/// One submenu per physical entry, listing the committed profiles with the bound one checked.
+void appendBindingMenus(HMENU menu, const std::vector<BindingSlot>& slots, const ProfileConfiguration& config) {
+    for (UINT slot = 0; slot < slots.size(); ++slot) {
+        HMENU sub = CreatePopupMenu();
+        const TranslationProfile* bound = profiles::BoundProfile(config, slots[slot].entry);
+        for (UINT i = 0; i < config.profiles.size() && i < kBindStride; ++i) {
+            const TranslationProfile& profile = config.profiles[i];
+            const UINT checked = bound && bound->id == profile.id ? MF_CHECKED : 0;
+            AppendMenuW(sub, MF_STRING | checked, kMenuBindBase + slot * kBindStride + i,
+                        menuText(profile.name).c_str());
+        }
+        AppendMenuW(menu, MF_POPUP, (UINT_PTR)sub, slots[slot].label.c_str());
+    }
+}
 
 const wchar_t* actionName(ShortcutAction action) {
     switch (action) {
@@ -68,6 +133,17 @@ void TrayIcon::showMenu(HWND owner) {
     AppendMenuW(menu, MF_STRING | MF_GRAYED, kMenuRewriteHint, rewriteHint.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
+    // 绑定只影响之后的触发；用于解码的 profile 列表与菜单显示的是同一份已提交快照
+    const ProfileConfiguration config = s.snapshot().profileConfig;
+    const std::vector<BindingSlot> slots = {
+        {ProfileEntry::Shortcut1, L"Shortcut 1 profile  (" + s.readShortcut.displayString() + L")"},
+        {ProfileEntry::Shortcut2, L"Shortcut 2 profile  (" + s.rewriteShortcut.displayString() + L")"},
+        {ProfileEntry::Selection, L"Selection profile"},
+    };
+    appendBindingMenus(menu, slots, config);
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    AppendMenuW(menu, MF_STRING, kMenuProfiles, L"Manage profiles…");
     AppendMenuW(menu, MF_STRING, kMenuSettings, L"Settings…");
     AppendMenuW(menu, MF_STRING, kMenuQuit, L"Quit TypeTide");
 
@@ -78,18 +154,5 @@ void TrayIcon::showMenu(HWND owner) {
                                     pt.x, pt.y, 0, owner, nullptr);
     DestroyMenu(menu);
 
-    switch (cmd) {
-    case kMenuUpdate:
-        if (onOpenReleases) onOpenReleases();
-        break;
-    case kMenuToggle:
-        if (onToggleEnabled) onToggleEnabled();
-        break;
-    case kMenuSettings:
-        if (onOpenSettings) onOpenSettings();
-        break;
-    case kMenuQuit:
-        if (onQuit) onQuit();
-        break;
-    }
+    dispatchCommand(*this, cmd, slots, config);
 }

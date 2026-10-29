@@ -3,6 +3,7 @@
 //
 #pragma once
 #include <windows.h>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -21,9 +22,15 @@ DWORD SequenceNumber();
 /// 我们只承诺还原文本。
 struct Snapshot {
     std::optional<std::wstring> text;
+    bool readable = true;  // false: the clipboard could not be opened, so Restore leaves it alone
 };
 
 Snapshot Take();
 void Restore(const Snapshot& snap);
+
+/// Serializes whole clipboard transactions (fallback copy capture, paste replace) so one
+/// never snapshots or restores in the middle of the other. Worker threads only: the UI
+/// thread must never wait on it.
+std::mutex& TransactionMutex();
 
 } // namespace clipboard

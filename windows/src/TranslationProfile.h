@@ -55,11 +55,20 @@ ValidationResult Validate(const ProfileConfiguration& configuration);
 ValidationResult ValidateCapability(const TranslationProfile& profile);
 ProfileConfiguration Defaults();
 
+// Empty or Unicode-whitespace-only valid UTF-8: the "blank" rule Validate applies to
+// custom prompts and remote model names. Invalid UTF-8 is not blank (Validate rejects it).
+bool IsBlankText(const std::string& utf8);
+
 // Returned pointers are short-lived views. Copy before asynchronous use.
 const TranslationProfile* Find(const ProfileConfiguration& configuration,
                                const std::string& id);
 const TranslationProfile* BoundProfile(const ProfileConfiguration& configuration,
                                        ProfileEntry entry);
+
+// A copy of `configuration` with only `entry` bound to `profileId`. It is not validated:
+// commit it through the settings transaction, which rejects an unknown id.
+ProfileConfiguration WithBinding(ProfileConfiguration configuration, ProfileEntry entry,
+                                 const std::string& profileId);
 
 // Implemented by the Windows persistence layer using CoCreateGuid.
 std::string NewId();

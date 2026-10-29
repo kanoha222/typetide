@@ -19,14 +19,9 @@ namespace translator {
 
 namespace {
 
-// ---------- 提示词 ----------
+using Clock = std::chrono::steady_clock;
 
-std::string styleSuffix(RewriteStyle style) {
-    const char* ins = lang::StyleInstruction(style);
-    return *ins ? std::string(" ") + ins : std::string();
-}
-
-// ---------- LRU 缓存（key = backend|from|to|style|text）----------
+// ---------- LRU 缓存（key = execution::PreparedRequest::cacheIdentity）----------
 
 class Cache {
 public:
@@ -76,19 +71,6 @@ private:
     std::list<std::string> order_;
 };
 
-std::string cacheKey(const TranslationRequest& req, const char* backend) {
-    std::string k = backend;
-    k += '|';
-    k += req.source ? lang::Code(*req.source) : "auto";
-    k += '|';
-    k += lang::Code(req.target);
-    k += '|';
-    k += lang::StyleCode(req.style);
-    k += '|';
-    k += util::Narrow(req.text);
-    return k;
-}
-
 // ---------- 流式行组装（NDJSON / SSE 都按行切）----------
 
 class LineAssembler {
@@ -125,26 +107,6 @@ private:
     bool bomChecked_ = false;
 };
 
-// ---------- 后端配置快照 ----------
-// 工作线程绝不直接读 Settings::shared()（主线程同时改设置会数据竞争），
-// 发起请求时在调用线程拍快照带走。
-
-struct BackendConfig {
-    TranslationBackend backend;
-    std::string ollamaHost;
-    int ollamaPort;
-    std::string ollamaModel;
-    std::string openAIBaseURL;
-    std::string openAIKey;
-    std::string openAIModel;
-
-    static BackendConfig snapshot() {
-        const Settings& s = Settings::shared();
-        return {s.backend, s.ollamaHost, s.ollamaPort, s.ollamaModel,
-                s.openAIBaseURL, s.openAIKey, s.openAIModel};
-    }
-};
-
 // ---------- 活跃请求管理 ----------
 
 struct ActiveRequest {
@@ -161,12 +123,29 @@ void finishRequest(uint64_t id) {
 }
 
 // ---------- provider 实现（工作线程内运行）----------
+// 工作线程绝不读 Settings::shared()：每个请求带着主线程冻结的 context 与 Prepare 结果。
+
+struct Job {
+    execution::ContextPtr context;
+    execution::PreparedRequest request;
+    std::wstring text;
+    bool connectionTest = false;  // never cached, no translation diagnostics
+};
 
 struct StreamOutcome {
     bool ok = false;
     std::wstring error;
     std::wstring full;
 };
+
+// Provider text is shown in the popup and the editor: one short line, no control characters.
+std::wstring displayable(std::wstring text) {
+    constexpr size_t kMaxChars = 300;
+    for (wchar_t& c : text)
+        if (c < 0x20 || c == 0x7F) c = L' ';
+    if (text.size() > kMaxChars) text = text.substr(0, kMaxChars) + L"…";
+    return text;
+}
 
 std::wstring providerError(const http::Result& result) {
     if (!result.body.empty()) {
@@ -175,61 +154,38 @@ std::wstring providerError(const http::Result& result) {
         if (ok) {
             const json::Value& nested = body["error"];
             if (nested.isObject() && nested["message"].isString())
-                return util::Widen(nested["message"].asString());
-            if (nested.isString()) return util::Widen(nested.asString());
-            if (body["message"].isString()) return util::Widen(body["message"].asString());
+                return displayable(util::Widen(nested["message"].asString()));
+            if (nested.isString()) return displayable(util::Widen(nested.asString()));
+            if (body["message"].isString()) return displayable(util::Widen(body["message"].asString()));
         }
     }
-    return util::Widen(result.error);
+    return displayable(util::Widen(result.error));
 }
 
-StreamOutcome runOllama(const TranslationRequest& req, const BackendConfig& s, uint64_t id,
-                        const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
+StreamOutcome runOllama(const Job& job, uint64_t id, const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
     StreamOutcome out;
-
-    auto makeBody = [&](bool disableThink) {
-        json::Object options;
-        options["temperature"] = 0.3;
-        options["top_p"] = 0.9;
-        options["top_k"] = 40;
-
-        json::Object body;
-        body["model"] = s.ollamaModel;
-        body["prompt"] = PlainPrompt(req.text, req.target, req.source, req.style);
-        body["stream"] = true;
-        body["keep_alive"] = "10m";
-        // 思考型模型（qwen3 系等）默认会先生成大段隐藏推理，翻译一句要几分钟；
-        // 必须显式关闭。不支持该字段的模型会 400，调用方去掉后重试。
-        if (disableThink) body["think"] = false;
-        body["options"] = json::Value(std::move(options));
-        return json::Value(std::move(body)).dump();
-    };
-
-    std::wstring url = util::Widen(s.ollamaHost) + L":" + std::to_wstring(s.ollamaPort) + L"/api/generate";
-
     LineAssembler lines;
     auto onLine = [&](const std::string& line) {
-            bool ok = false;
-            json::Value v = json::Parse(line, &ok);
-            if (!ok) return;
-            const std::string& delta = v["response"].asString();
-            if (!delta.empty()) {
-                std::wstring wdelta = util::Widen(delta);
-                out.full += wdelta;
-                onDelta(id, wdelta);
-            }
+        bool ok = false;
+        json::Value v = json::Parse(line, &ok);
+        if (!ok) return;
+        const std::string& delta = v["response"].asString();
+        if (!delta.empty()) {
+            std::wstring wdelta = util::Widen(delta);
+            out.full += wdelta;
+            onDelta(id, wdelta);
+        }
     };
-    auto onChunk = [&](const char* data, size_t len) {
-        lines.feed(data, len, onLine);
-    };
+    auto onChunk = [&](const char* data, size_t len) { lines.feed(data, len, onLine); };
 
-    http::Result r = http::PostStream(url, makeBody(true), L"", onChunk, cancel);
+    const execution::PreparedRequest& request = job.request;
+    http::Result r = http::PostStream(request.finalUrl, request.body, L"", onChunk, cancel);
     if (r.status == 400 && !cancel.load()) {
-        // 模型不支持 think 字段 → 去掉重试
+        // 思考型模型需 think:false；不支持该字段的模型会 400 → 用不含 think 的 retry body 重试
         util::Log("ollama: think rejected (400), retrying without");
         lines = LineAssembler();
         out.full.clear();
-        r = http::PostStream(url, makeBody(false), L"", onChunk, cancel);
+        r = http::PostStream(request.finalUrl, request.retryBody, L"", onChunk, cancel);
     }
     if (!r.ok) {
         out.error = r.status == 0 && !cancel.load()
@@ -242,70 +198,29 @@ StreamOutcome runOllama(const TranslationRequest& req, const BackendConfig& s, u
     return out;
 }
 
-StreamOutcome runOpenAI(const TranslationRequest& req, const BackendConfig& s, uint64_t id,
-                        const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
-    StreamOutcome out;
-
-    std::string base = s.openAIBaseURL;
-    while (!base.empty() && base.back() == '/') base.pop_back();
-    if (base.empty()) {
-        out.error = L"Missing cloud API base URL";
-        return out;
-    }
-    if (s.openAIModel.empty()) {
-        out.error = L"Missing cloud model name";
-        return out;
-    }
-    const bool localEndpoint = base.rfind("http://127.0.0.1", 0) == 0 ||
-                               base.rfind("http://localhost", 0) == 0 ||
-                               base.rfind("http://[::1]", 0) == 0;
-    const bool secureEndpoint = base.rfind("https://", 0) == 0;
-    if (s.openAIKey.empty() && !localEndpoint) {
-        out.error = L"Missing cloud API key";
-        return out;
-    }
-    if (!s.openAIKey.empty() && !secureEndpoint && !localEndpoint) {
-        out.error = L"Refusing to send an API key over an insecure HTTP connection";
-        return out;
-    }
-
-    json::Array messages;
-    {
-        json::Object sys;
-        sys["role"] = "system";
-        sys["content"] = SystemPrompt(req.target, req.source, req.style);
-        messages.push_back(json::Value(std::move(sys)));
-        json::Object user;
-        user["role"] = "user";
-        user["content"] = util::Narrow(req.text);
-        messages.push_back(json::Value(std::move(user)));
-    }
-    json::Object body;
-    body["model"] = s.openAIModel;
-    body["stream"] = true;
-    body["messages"] = json::Value(std::move(messages));
-
+std::wstring openAIHeaders(const Job& job) {
     std::wstring headers;
-    if (!s.openAIKey.empty())
-        headers += L"Authorization: Bearer " + util::Widen(s.openAIKey) + L"\r\n";
-    if (base.find("openrouter.ai") != std::string::npos) {
+    const std::string& key = job.context->connection.openAIKey;
+    if (!key.empty()) headers += L"Authorization: Bearer " + util::Widen(key) + L"\r\n";
+    if (job.request.finalUrl.find(L"openrouter.ai") != std::wstring::npos) {
         headers += L"HTTP-Referer: https://xnu.app/TypeTide/\r\n";
         headers += L"X-OpenRouter-Title: TypeTide\r\n";
     }
+    return headers;
+}
 
+StreamOutcome runOpenAI(const Job& job, uint64_t id, const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
+    StreamOutcome out;
     LineAssembler lines;
     auto onLine = [&](const std::string& line) {
-            if (auto delta = ParseOpenAISSELine(line)) {
-                out.full += *delta;
-                onDelta(id, *delta);
-            }
+        if (auto delta = ParseOpenAISSELine(line)) {
+            out.full += *delta;
+            onDelta(id, *delta);
+        }
     };
-    auto onChunk = [&](const char* data, size_t len) {
-        lines.feed(data, len, onLine);
-    };
+    auto onChunk = [&](const char* data, size_t len) { lines.feed(data, len, onLine); };
 
-    http::Result r = http::PostStream(util::Widen(base) + L"/chat/completions",
-                                      json::Value(std::move(body)).dump(), headers, onChunk, cancel);
+    http::Result r = http::PostStream(job.request.finalUrl, job.request.body, openAIHeaders(job), onChunk, cancel);
     if (!r.ok) {
         out.error = providerError(r);
         return out;
@@ -315,11 +230,22 @@ StreamOutcome runOpenAI(const TranslationRequest& req, const BackendConfig& s, u
     return out;
 }
 
-StreamOutcome runBuiltIn(const TranslationRequest& req, uint64_t id,
-                         const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
+StreamOutcome runBuiltIn(const Job& job, uint64_t id, const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
+    // Prepare only lets the Faithful preset through to BuiltIn.
+    const TranslationRequest request{job.text, job.request.direction.source, job.request.direction.target,
+                                     RewriteStyle::Faithful};
     StreamOutcome out;
-    out.ok = builtin::Stream(req, id, onDelta, cancel, &out.full, &out.error);
+    out.ok = builtin::Stream(request, id, onDelta, cancel, &out.full, &out.error);
     return out;
+}
+
+StreamOutcome runProvider(const Job& job, uint64_t id, const DeltaFn& onDelta, const std::atomic<bool>& cancel) {
+    switch (job.request.backend) {
+    case TranslationBackend::BuiltIn: return runBuiltIn(job, id, onDelta, cancel);
+    case TranslationBackend::OpenAI: return runOpenAI(job, id, onDelta, cancel);
+    case TranslationBackend::Ollama: return runOllama(job, id, onDelta, cancel);
+    }
+    return {};
 }
 
 const char* backendName(TranslationBackend backend) {
@@ -331,51 +257,120 @@ const char* backendName(TranslationBackend backend) {
     return "unknown";
 }
 
+int elapsedMs(Clock::time_point from, Clock::time_point to) {
+    return (int)std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
+
+// Caches and reports the delivered text: exact for custom prompts, trimmed for presets.
+void completeJob(const Job& job, uint64_t id, const StreamOutcome& out, const DoneFn& onDone,
+                 int firstMs, int totalMs) {
+    const char* backend = backendName(job.request.backend);
+    const int chars = (int)job.text.size();
+    const std::optional<std::wstring> delivered =
+        out.ok ? execution::DeliveredOutput(job.context->profile, out.full) : std::nullopt;
+    if (delivered) {
+        if (!job.connectionTest) Cache::shared().set(job.request.cacheIdentity, *delivered);
+        onDone(id, true, L"");
+        if (!job.connectionTest)
+            diagnostics::Record("translation", "success", backend, {}, {}, firstMs, totalMs, chars);
+        return;
+    }
+    onDone(id, false, out.ok ? L"Empty translation" : out.error);
+    if (!job.connectionTest)
+        diagnostics::Record("translation", "failure", backend, {}, out.ok ? "emptyResponse" : "provider",
+                            firstMs, totalMs, chars);
+}
+
+void runJob(const Job& job, uint64_t id, const std::shared_ptr<std::atomic<bool>>& cancel,
+            Clock::time_point start, const DeltaFn& onDelta, const DoneFn& onDone) {
+    std::optional<Clock::time_point> firstToken;
+    DeltaFn trackedDelta = [&](uint64_t requestId, const std::wstring& delta) {
+        if (!delta.empty() && !firstToken) firstToken = Clock::now();
+        onDelta(requestId, delta);
+    };
+    const StreamOutcome out = runProvider(job, id, trackedDelta, *cancel);
+    const bool cancelled = cancel->load();
+    finishRequest(id);
+    const int totalMs = elapsedMs(start, Clock::now());
+    const int firstMs = firstToken ? elapsedMs(start, *firstToken) : -1;
+    if (cancelled) {
+        if (!job.connectionTest)
+            diagnostics::Record("translation", "cancelled", backendName(job.request.backend), {}, "cancelled",
+                                firstMs, totalMs, (int)job.text.size());
+        return;  // 取消的请求不再回调
+    }
+    completeJob(job, id, out, onDone, firstMs, totalMs);
+}
+
+// A connection test checks one explicit backend + model with a fixed synthetic sentence; it
+// never uses a selection, the clipboard or a saved profile's prompt.
+execution::ContextPtr connectionTestContext(const profilestatus::Probe& probe,
+                                            const execution::ConnectionSnapshot& connection) {
+    TranslationProfile test;
+    test.id = "connection-test";
+    test.name = "Connection test";
+    test.nativeLanguage = Language::Chinese;
+    test.foreignLanguage = Language::English;
+    test.direction = TranslationDirection::ForeignToNative;
+    test.backend = probe.backend;
+    test.model = probe.model;
+    return execution::Freeze(std::move(test), ShortcutAction::SmartPopup, connection);
+}
+
 } // namespace
 
 std::string SystemPrompt(Language target, std::optional<Language> source, RewriteStyle style) {
-    std::string from = source ? lang::PromptName(*source) : "the detected language";
-    std::string s = "You are a professional translation engine. Translate the user's text from ";
-    s += from;
-    s += " into ";
-    s += lang::PromptName(target);
-    s += ".";
-    s += styleSuffix(style);
-    s += " Output ONLY the translation, with no quotes, no explanations, no extra notes. "
-         "Preserve the original meaning and formatting.";
-    return s;
+    return execution::PresetSystemPrompt(target, source, style);
 }
 
 std::string PlainPrompt(const std::wstring& text, Language target, std::optional<Language> source, RewriteStyle style) {
-    std::string from = source ? lang::PromptName(*source) : "the source language";
-    std::string s = "Translate the following text from ";
-    s += from;
-    s += " to ";
-    s += lang::PromptName(target);
-    s += ".";
-    s += styleSuffix(style);
-    s += " Only output the translation, no explanation.\n\n";
-    s += util::Narrow(text);
-    return s;
+    return execution::PresetPlainPrompt(text, target, source, style);
 }
 
-uint64_t Stream(const TranslationRequest& req, DeltaFn onDelta, DoneFn onDone) {
-    uint64_t id = g_nextId.fetch_add(1);
-    const auto start = std::chrono::steady_clock::now();
+execution::ConnectionSnapshot ConnectionFrom(const SettingsSnapshot& snapshot) {
+    execution::ConnectionSnapshot connection;
+    connection.connectionEpoch = snapshot.connectionEpoch;
+    connection.ollamaHost = snapshot.ollamaHost;
+    connection.ollamaPort = snapshot.ollamaPort;
+    connection.openAIBaseURL = snapshot.openAIBaseURL;
+    connection.openAIKey = snapshot.openAIKey;
+    return connection;
+}
 
-    // 配置快照在调用线程（主线程）拍好带进工作线程
-    BackendConfig cfg = BackendConfig::snapshot();
+execution::ContextPtr FreezeEntry(ProfileEntry entry, ShortcutAction action) {
+    const SettingsSnapshot snapshot = Settings::shared().snapshot();
+    return execution::FreezeBound(snapshot.profileConfig, entry, action, ConnectionFrom(snapshot));
+}
 
-    // 缓存命中：同步回调全文
-    const char* provider = backendName(cfg.backend);
-    std::string key = cacheKey(req, provider);
-    if (auto cached = Cache::shared().get(key)) {
-        onDelta(id, *cached);
-        onDone(id, true, L"");
-        diagnostics::Record("translation", "cacheHit",
-                            provider,
-                            {}, {}, 0, 0, (int)req.text.size());
+namespace {
+
+// Stream() and connection tests. A connection test skips the cache (read and write) and the
+// translation diagnostics; it reports its own health-check event.
+uint64_t startStream(const execution::ContextPtr& context, const std::wstring& text,
+                     std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone,
+                     bool connectionTest) {
+    const uint64_t id = g_nextId.fetch_add(1);
+    if (!context) {
+        onDone(id, false, L"No translation profile is bound to this action.");
         return id;
+    }
+    const Clock::time_point start = Clock::now();
+    const char* provider = backendName(context->profile.backend);
+    execution::PreparedRequest request = execution::Prepare(*context, text, targetOverride);
+    if (!request.ok()) {
+        if (!connectionTest)
+            diagnostics::Record("translation", "failure", provider, {}, "prepare", -1, 0, (int)text.size());
+        onDone(id, false, execution::PrepareErrorMessage(request.status, request.backend));
+        return id;
+    }
+    // 缓存命中：同步回调全文（缓存里存的已是交付文本）
+    if (!connectionTest) {
+        if (auto cached = Cache::shared().get(request.cacheIdentity)) {
+            onDelta(id, *cached);
+            onDone(id, true, L"");
+            diagnostics::Record("translation", "cacheHit", provider, {}, {}, 0, 0, (int)text.size());
+            return id;
+        }
     }
 
     auto cancel = std::make_shared<std::atomic<bool>>(false);
@@ -383,49 +378,23 @@ uint64_t Stream(const TranslationRequest& req, DeltaFn onDelta, DoneFn onDone) {
         std::lock_guard lock(g_mu);
         g_active[id] = {cancel};
     }
-
-    std::thread([req, cfg, id, key, cancel, start,
+    std::thread([job = Job{context, std::move(request), text, connectionTest}, id, cancel, start,
                  onDelta = std::move(onDelta), onDone = std::move(onDone)] {
-        std::optional<std::chrono::steady_clock::time_point> firstToken;
-        DeltaFn trackedDelta = [&](uint64_t requestId, const std::wstring& delta) {
-            if (!delta.empty() && !firstToken) firstToken = std::chrono::steady_clock::now();
-            onDelta(requestId, delta);
-        };
-        StreamOutcome out = cfg.backend == TranslationBackend::BuiltIn
-                                ? runBuiltIn(req, id, trackedDelta, *cancel)
-                            : cfg.backend == TranslationBackend::OpenAI
-                                ? runOpenAI(req, cfg, id, trackedDelta, *cancel)
-                                : runOllama(req, cfg, id, trackedDelta, *cancel);
-        bool cancelled = cancel->load();
-        finishRequest(id);
-        const auto end = std::chrono::steady_clock::now();
-        const int totalMs = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-        const int firstMs = firstToken
-            ? (int)std::chrono::duration_cast<std::chrono::milliseconds>(*firstToken - start).count()
-            : -1;
-        const char* backend = backendName(cfg.backend);
-        if (cancelled) {
-            diagnostics::Record("translation", "cancelled", backend, {}, "cancelled",
-                                firstMs, totalMs, (int)req.text.size());
-            return;  // 取消的请求不再回调
-        }
-        const std::wstring cleaned = util::Trim(out.full);
-        if (out.ok && !cleaned.empty()) {
-            Cache::shared().set(key, cleaned);
-            onDone(id, true, L"");
-            diagnostics::Record("translation", "success", backend, {}, {},
-                                firstMs, totalMs, (int)req.text.size());
-        } else {
-            const bool emptyResponse = out.ok && cleaned.empty();
-            const std::wstring error = emptyResponse ? L"Empty translation" : out.error;
-            onDone(id, false, error);
-            diagnostics::Record("translation", "failure", backend, {},
-                                emptyResponse ? "emptyResponse" : "provider",
-                                firstMs, totalMs, (int)req.text.size());
-        }
+        runJob(job, id, cancel, start, onDelta, onDone);
     }).detach();
-
     return id;
+}
+
+} // namespace
+
+uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
+                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
+    return startStream(context, text, targetOverride, std::move(onDelta), std::move(onDone), false);
+}
+
+uint64_t StreamUncached(const execution::ContextPtr& context, const std::wstring& text,
+                        std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
+    return startStream(context, text, targetOverride, std::move(onDelta), std::move(onDone), true);
 }
 
 void Cancel(uint64_t reqId) {
@@ -439,14 +408,15 @@ void CancelAll() {
     for (auto& [id, req] : g_active) req.cancel->store(true);
 }
 
-std::optional<std::wstring> TranslateFully(const TranslationRequest& req, std::wstring* error) {
+std::optional<std::wstring> TranslateFully(const execution::ContextPtr& context, const std::wstring& text,
+                                           std::wstring* error) {
     std::mutex mu;
     std::condition_variable cv;
     bool done = false, ok = false;
     std::wstring full, err;
 
     Stream(
-        req,
+        context, text, std::nullopt,
         [&](uint64_t, const std::wstring& delta) {
             std::lock_guard lock(mu);
             full += delta;
@@ -462,50 +432,44 @@ std::optional<std::wstring> TranslateFully(const TranslationRequest& req, std::w
     std::unique_lock lock(mu);
     cv.wait(lock, [&] { return done; });
 
-    std::wstring cleaned = util::Trim(full);
-    if (!ok || cleaned.empty()) {
-        if (error) *error = ok ? L"Empty translation" : err;
-        return std::nullopt;
-    }
-    return cleaned;
+    const std::optional<std::wstring> delivered =
+        ok && context ? execution::DeliveredOutput(context->profile, full) : std::nullopt;
+    if (!delivered && error) *error = ok ? L"Empty translation" : err;
+    return delivered;
 }
 
-void CheckHealthAsync(std::function<void(HealthCheckResult)> completion) {
-    const auto start = std::chrono::steady_clock::now();
-    const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+void CheckConnectionAsync(const profilestatus::Probe& probe, const execution::ConnectionSnapshot& connection,
+                          std::function<void(HealthCheckResult)> completion) {
+    const auto start = Clock::now();
     struct State {
         std::mutex mutex;
         std::wstring full;
-        std::optional<std::chrono::steady_clock::time_point> first;
+        std::optional<Clock::time_point> first;
     };
     auto state = std::make_shared<State>();
-    const std::string backend = backendName(Settings::shared().backend);
-    Stream(
-        {L"TypeTide health check " + std::to_wstring(stamp), Language::English,
-         Language::Chinese, RewriteStyle::Faithful},
+    const std::string backend = backendName(probe.backend);
+    startStream(
+        connectionTestContext(probe, connection), L"TypeTide connection test: the weather is nice today.",
+        std::nullopt,
         [state](uint64_t, const std::wstring& delta) {
             std::lock_guard lock(state->mutex);
-            if (!delta.empty() && !state->first) state->first = std::chrono::steady_clock::now();
+            if (!delta.empty() && !state->first) state->first = Clock::now();
             state->full += delta;
         },
         [state, start, backend, completion = std::move(completion)](
             uint64_t, bool success, const std::wstring& message) mutable {
-            const auto end = std::chrono::steady_clock::now();
             std::lock_guard lock(state->mutex);
             HealthCheckResult result;
             result.ok = success && !util::Trim(state->full).empty();
-            result.message = result.ok ? L"Connected and translated successfully."
-                                       : (message.empty() ? L"No translation returned." : message);
-            result.firstTokenMs = state->first
-                ? (int)std::chrono::duration_cast<std::chrono::milliseconds>(*state->first - start).count()
-                : -1;
-            result.totalMs = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            result.message = result.ok ? L"Connected" : (message.empty() ? L"No translation returned." : message);
+            result.firstTokenMs = state->first ? elapsedMs(start, *state->first) : -1;
+            result.totalMs = elapsedMs(start, Clock::now());
             diagnostics::Record("backendHealthCheck", result.ok ? "success" : "failure",
                                 backend, {}, result.ok ? "" : "backend",
                                 result.firstTokenMs, result.totalMs);
             completion(std::move(result));
-        });
+        },
+        /*connectionTest=*/true);
 }
 
 void ClearCacheForTesting() {

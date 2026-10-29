@@ -1,12 +1,14 @@
 //
-//  OllamaModels.h — Ollama 已装模型列表与默认模型自动纠正
+//  OllamaModels.h — Ollama 已装模型列表、绑定模型预加载
 //  （对应 macOS 的 OllamaModelResolver + ModelsSettingsView 数据源）。
+//  A missing model is only ever reported (ProfileStatus), never replaced by another one.
 //
 //  线程约定：Settings 只在主线程读写。异步接口在调用线程拍好
-//  host/port 快照带进工作线程，结果 PostMessage 回主线程处理。
+//  已提交的 host/port 快照带进工作线程，结果 PostMessage 回主线程处理。
 //
 #pragma once
 #include <windows.h>
+#include "ProfileStatus.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -17,19 +19,29 @@ namespace ollamamodels {
 /// 失败返回空并填 error。
 std::vector<std::wstring> ListInstalled(const std::string& host, int port, std::wstring* error);
 
-/// 异步拉取模型列表：主线程调用（内部拍 Settings 快照），完成后向 notify 投递
-/// message（lParam = new std::vector<std::wstring>*，接收方释放）。
-void FetchInstalledAsync(HWND notify, UINT message);
+/// One finished model discovery, posted back to the requesting window.
+struct Discovery {
+    profilestatus::Ticket ticket;  // as passed to FetchInstalledAsync; check it before use
+    bool ok = false;
+    std::vector<std::wstring> models;
+    std::wstring error;
+};
 
-/// 异步发送空 generate 请求预加载当前模型，并保持在内存中 10 分钟。
-void PreloadAsync();
+/// 异步拉取模型列表：主线程调用（内部拍已提交 Settings 的快照），完成后向 notify 投递
+/// message（lParam = new Discovery*，接收方释放）。
+void FetchInstalledAsync(HWND notify, UINT message, profilestatus::Ticket ticket);
 
-/// 主线程调用：给定已装模型列表，配置的模型未安装时改成第一个已装的并保存。
-/// 返回 true 表示发生了替换。
-bool ApplyResolvedModels(const std::vector<std::wstring>& installed);
+/// Main thread: warms the Ollama models committed profiles actually bind, each once, for 10
+/// minutes. With a known `installed` list, models that are not installed are skipped. A later
+/// call supersedes a preload still in progress.
+void PreloadAsync(const std::vector<std::wstring>* installed = nullptr);
 
-/// 同步版自动纠正（自检用；网络阻塞，勿在主线程调）。
-bool EnsureValidDefault();
+/// Main thread: stops a preload in progress (the Ollama endpoint or the bindings changed).
+void CancelPreload();
+
+/// Main thread: reacts to a discovered model list. It never changes or saves settings (a
+/// missing model stays visible as missing); it only preloads bound, installed models.
+void OnDiscovered(const std::vector<std::wstring>& installed);
 
 /// Largest installed model that should fit comfortably in the supplied physical memory.
 /// Returns the first model only when no tag exposes a parameter count such as `:7b`.

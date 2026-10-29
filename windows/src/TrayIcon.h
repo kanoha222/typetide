@@ -4,6 +4,7 @@
 #pragma once
 #include <windows.h>
 #include <shellapi.h>
+#include "TranslationTypes.h"
 #include <functional>
 #include <string>
 
@@ -20,8 +21,11 @@ public:
 
     std::function<void()> onToggleEnabled;
     std::function<void()> onOpenSettings;
+    std::function<void()> onOpenProfiles;
     std::function<void()> onOpenReleases;
     std::function<void()> onQuit;
+    /// Binding submenus: bind `entry` (shortcut slot 1/2, selection) to a profile id.
+    std::function<void(ProfileEntry, const std::string&)> onBindProfile;
 
 private:
     NOTIFYICONDATAW nid_{};

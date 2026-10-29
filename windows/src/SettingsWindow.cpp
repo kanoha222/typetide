@@ -4,8 +4,10 @@
 #include "LaunchAtLogin.h"
 #include "LocalDiagnostics.h"
 #include "OllamaModels.h"
+#include "ProfileStatus.h"
 #include "resource.h"
 #include "Settings.h"
+#include "TranslationProfilesWindow.h"
 #include "Translator.h"
 #include "UpdateChecker.h"
 #include "Util.h"
@@ -18,15 +20,17 @@
 #include <string>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
 namespace {
 
 constexpr wchar_t kClassName[] = L"TypeTideSettings";
-// 工作线程取回 Ollama 模型列表：lParam = std::vector<std::wstring>*（接收方释放）
+// 工作线程取回 Ollama 模型列表：lParam = ollamamodels::Discovery*（接收方释放）
 constexpr UINT kMsgOllamaModels = WM_APP + 100;
 constexpr UINT kMsgUpdateResult = WM_APP + 101;
+// One connection test result: lParam = ConnectionResult*（接收方释放）
 constexpr UINT kMsgBackendHealth = WM_APP + 102;
 constexpr UINT kMsgBuiltInProgress = WM_APP + 103;
 
@@ -36,27 +40,27 @@ struct BuiltInProgress {
     bool done = false;
 };
 
+struct ConnectionResult {
+    profilestatus::Ticket ticket;
+    size_t index = 0;  // into State::testedProbes
+    translator::HealthCheckResult result;
+};
+
 enum CtrlId : int {
     kTab = 1000,
     // General
     kEnable, kLogin, kVersionLabel, kCheckUpdate, kFirstRunHint,
-    // Backend
-    kBackendBuiltIn, kBuiltInDownload, kBuiltInStatus, kBackendOllama, kBackendOpenAI,
-    kOllamaModelLabel, kOllamaModel, kOllamaRefresh, kOllamaHint,
+    // Translation: connections
+    kBuiltInDownload, kBuiltInStatus, kOllamaEndpoint, kOllamaRefresh, kOllamaHint,
     kOaiProviderLabel, kOaiProvider,
-    kOaiUrlLabel, kOaiUrl, kOaiKeyLabel, kOaiKey, kOaiModelLabel, kOaiModel, kOaiHint, kPrivacyHint,
-    kBackendTest, kBackendStatus,
-    // Language
-    kNativeLabel, kNative, kForeignLabel, kForeign,
-    kReadDirLabel, kReadDir, kRewriteDirLabel, kRewriteDir, kLangWarn,
+    kOaiUrlLabel, kOaiUrl, kOaiKeyLabel, kOaiKey, kOaiHint, kPrivacyHint,
     // Shortcuts
     kHkReadLabel, kHkRead, kReadWin, kHkReadClear,
     kHkRewriteLabel, kHkRewrite, kRewriteWin, kHkRewriteClear,
     kReadActionLabel, kReadAction, kRewriteActionLabel, kRewriteAction,
     kHkRestoreDefaults, kHkVerify, kHkNote,
     // Behavior
-    kTriggerLabel, kTrigger, kPreview,
-    kReadStyleLabel, kReadStyle, kRewriteStyleLabel, kRewriteStyle,
+    kTriggerLabel, kTrigger, kPreview, kBehaviorNote,
     // Skip apps
     kSkipEdit, kSkipAdd, kSkipList, kSkipRemove, kSkipHint,
     // Diagnostics
@@ -66,6 +70,9 @@ enum CtrlId : int {
     // Page headings (must remain contiguous)
     kPageTitle0, kPageTitle1, kPageTitle2, kPageTitle3,
     kPageTitle4, kPageTitle5, kPageTitle6, kPageTitle7,
+    // Profile summaries; fixed values the end-to-end test addresses directly.
+    kSummary1 = 1901, kSummary2, kSummary3, kManageProfiles, kTestBound, kTestStatus,
+    kLanguage1 = 1911, kLanguage2, kLanguage3, kLanguageManage,
 };
 
 struct State {
@@ -84,6 +91,17 @@ struct State {
     std::shared_ptr<std::atomic<bool>> modelDownloadCancel;
     int clientWidth = 0;
     int clientHeight = 0;
+    // Ollama discovery: results are dropped unless they answer the latest request for the
+    // Ollama endpoint that is still committed (ollamaVersion counts endpoint changes).
+    profilestatus::ResultGuard discoveryGuard;
+    std::wstring ollamaEndpoint;
+    uint64_t ollamaVersion = 0;
+    std::optional<std::vector<std::wstring>> installed;
+    // Connection tests: one round per click, dropped when the connection or bindings change.
+    profilestatus::ResultGuard testGuard;
+    uint64_t connectionEpoch = 0;
+    std::vector<profilestatus::Probe> testedProbes;
+    std::vector<std::optional<translator::HealthCheckResult>> testResults;
 };
 
 State g;
@@ -191,9 +209,15 @@ void updateFirstRunCompletion() {
         s.save();
     }
     if (ctrl(kFirstRunHint)) {
-        SetWindowTextW(ctrl(kFirstRunHint), s.hasCompletedFirstLaunch
-            ? L"Setup checks complete. TypeTide is ready."
-            : L"First run: test the backend and verify both shortcuts before relying on TypeTide.");
+        // A read-only store keeps defaults in memory and refuses every save: say so first.
+        const std::wstring text = s.isReadOnly()
+            ? L"Settings could not be loaded (" + util::Widen(s.storageError()) +
+                  L"). TypeTide is running with defaults and will not save changes."
+            : s.hasCompletedFirstLaunch
+                ? std::wstring(L"Setup checks complete. TypeTide is ready.")
+                : std::wstring(L"First run: test the bound models on the Translation page and verify the "
+                               L"shortcuts before relying on TypeTide.");
+        SetWindowTextW(ctrl(kFirstRunHint), text.c_str());
     }
 }
 
@@ -326,49 +350,10 @@ HWND makeLabel(const wchar_t* text, int x, int y, int w, int id, bool bold = fal
     return c;
 }
 
-void fillLanguageCombo(HWND combo, Language selected) {
-    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    for (Language l : lang::All) {
-        int idx = (int)SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)lang::DisplayName(l));
-        if (l == selected) SendMessageW(combo, CB_SETCURSEL, idx, 0);
-    }
-}
-
-Language comboLanguage(HWND combo) {
-    int idx = (int)SendMessageW(combo, CB_GETCURSEL, 0, 0);
-    if (idx < 0 || idx >= (int)std::size(lang::All)) return Language::English;
-    return lang::All[idx];
-}
-
-void fillDirectionCombo(HWND combo, TranslationDirection selected) {
-    const Settings& s = Settings::shared();
-    std::wstring native = lang::ShortName(s.nativeLanguage);
-    std::wstring foreign = lang::ShortName(s.foreignLanguage);
-    std::wstring items[] = {
-        L"Auto · bidirectional",
-        native + L" → " + foreign,
-        foreign + L" → " + native,
-    };
-    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    for (auto& it : items) SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)it.c_str());
-    SendMessageW(combo, CB_SETCURSEL, (int)selected, 0);
-}
-
-void fillStyleCombo(HWND combo, RewriteStyle selected) {
-    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    const RewriteStyle all[] = {RewriteStyle::Faithful, RewriteStyle::Formal,
-                                RewriteStyle::Casual, RewriteStyle::Polished};
-    for (RewriteStyle st : all) {
-        int idx = (int)SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)lang::StyleDisplayName(st));
-        if (st == selected) SendMessageW(combo, CB_SETCURSEL, idx, 0);
-    }
-}
-
-RewriteStyle comboStyle(HWND combo) {
-    const RewriteStyle all[] = {RewriteStyle::Faithful, RewriteStyle::Formal,
-                                RewriteStyle::Casual, RewriteStyle::Polished};
-    int idx = (int)SendMessageW(combo, CB_GETCURSEL, 0, 0);
-    return (idx >= 0 && idx < 4) ? all[idx] : RewriteStyle::Faithful;
+// Text that may contain user data (profile names, provider messages): '&' is shown as is, and
+// a line too long for the page ends in an ellipsis (WM_GETTEXT still returns all of it).
+HWND makeText(const wchar_t* text, int x, int y, int w, int id) {
+    return make(L"STATIC", text, SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS | SS_NOPREFIX, x, y, w, 18, id);
 }
 
 void fillShortcutActionCombo(HWND combo, ShortcutAction selected) {
@@ -419,18 +404,6 @@ void updateShortcutControls() {
 
 // ---------- 页构建 ----------
 
-void updateBackendEnabled() {
-    const Settings& s = Settings::shared();
-    bool ollama = s.backend == TranslationBackend::Ollama;
-    bool cloud = s.backend == TranslationBackend::OpenAI;
-    EnableWindow(ctrl(kOllamaModel), ollama);
-    EnableWindow(ctrl(kOllamaRefresh), ollama);
-    EnableWindow(ctrl(kOaiProvider), cloud);
-    EnableWindow(ctrl(kOaiUrl), cloud);
-    EnableWindow(ctrl(kOaiKey), cloud);
-    EnableWindow(ctrl(kOaiModel), cloud);
-}
-
 void updateBuiltInStatus() {
     if (!g.hwnd || !ctrl(kBuiltInDownload)) return;
     const bool downloading = g.modelDownloadCancel != nullptr;
@@ -450,39 +423,172 @@ int cloudProviderIndex(const std::string& baseUrl) {
     return 3;
 }
 
+// Presets fill the endpoint only; each profile names its own model in the profile editor.
 void applyCloudProviderPreset(int index) {
     Settings& s = Settings::shared();
     switch (index) {
-    case 0:
-        s.openAIBaseURL = "https://api.openai.com/v1";
-        s.openAIModel = "gpt-5-mini";
-        break;
-    case 1:
-        s.openAIBaseURL = "https://openrouter.ai/api/v1";
-        s.openAIModel = "openai/gpt-5-mini";
-        break;
-    case 2:
-        s.openAIBaseURL = "https://api.deepseek.com";
-        s.openAIModel = "deepseek-v4-flash";
-        break;
-    default:
-        return;
+    case 0: s.openAIBaseURL = "https://api.openai.com/v1"; break;
+    case 1: s.openAIBaseURL = "https://openrouter.ai/api/v1"; break;
+    case 2: s.openAIBaseURL = "https://api.deepseek.com"; break;
+    default: return;
     }
     SetWindowTextW(ctrl(kOaiUrl), util::Widen(s.openAIBaseURL).c_str());
-    SetWindowTextW(ctrl(kOaiModel), util::Widen(s.openAIModel).c_str());
 }
 
-/// 后台拉取已装模型列表，回主线程填充下拉框（Settings 快照在主线程拍好）
+// ---------- profile summaries, model discovery and connection tests ----------
+
+/// Background request for the models installed in Ollama; the answer is checked against the
+/// guard before it is shown (Settings snapshot taken on the main thread).
 void fetchOllamaModelsAsync() {
-    ollamamodels::FetchInstalledAsync(g.hwnd, kMsgOllamaModels);
+    SetWindowTextW(ctrl(kOllamaHint), L"Checking installed models…");
+    ollamamodels::FetchInstalledAsync(g.hwnd, kMsgOllamaModels, g.discoveryGuard.begin(g.ollamaVersion));
 }
 
-void updateLangWarn() {
+/// The test result shown after a bound entry's summary, if its backend + model was tested.
+std::wstring testSuffix(const TranslationProfile& profile) {
+    const profilestatus::Probe probe{profile.backend, profile.model};
+    for (size_t i = 0; i < g.testedProbes.size() && i < g.testResults.size(); ++i) {
+        if (!(g.testedProbes[i] == probe)) continue;
+        const std::optional<translator::HealthCheckResult>& result = g.testResults[i];
+        if (!result) return L"  · testing…";
+        if (!result->ok) return L"  ✗ " + result->message;
+        std::wstring text = L"  ✓ " + result->message;
+        if (result->firstTokenMs >= 0) text += L" · first token " + std::to_wstring(result->firstTokenMs) + L" ms";
+        return text + L" · total " + std::to_wstring(result->totalMs) + L" ms";
+    }
+    return {};
+}
+
+/// Drops the current test round (results in flight are ignored when they arrive).
+void resetConnectionTests(const wchar_t* status) {
+    g.backendReady = false;  // an earlier pass no longer describes these bindings/connection
+    g.testGuard.invalidate();
+    g.testedProbes.clear();
+    g.testResults.clear();
+    if (!ctrl(kTestBound)) return;
+    EnableWindow(ctrl(kTestBound), TRUE);
+    SetWindowTextW(ctrl(kTestStatus), status);
+}
+
+/// Rewrites the binding summaries from the committed configuration.
+void refreshProfileSummary() {
+    if (!g.hwnd || !ctrl(kSummary1)) return;
+    const SettingsSnapshot snapshot = Settings::shared().snapshot();
+    if (!g.testedProbes.empty() && profilestatus::BoundProbes(snapshot.profileConfig) != g.testedProbes)
+        resetConnectionTests(L"The bindings changed. Test again.");
+    const std::vector<profilestatus::EntryStatus> statuses = profilestatus::Describe(
+        snapshot.profileConfig, translator::ConnectionFrom(snapshot), g.installed ? &*g.installed : nullptr);
+    const int summaryIds[] = {kSummary1, kSummary2, kSummary3};
+    const int languageIds[] = {kLanguage1, kLanguage2, kLanguage3};
+    for (size_t i = 0; i < statuses.size() && i < std::size(summaryIds); ++i) {
+        std::wstring line = profilestatus::SummaryLine(statuses[i]);
+        if (statuses[i].bound) line += testSuffix(statuses[i].profile);
+        SetWindowTextW(ctrl(summaryIds[i]), line.c_str());
+        SetWindowTextW(ctrl(languageIds[i]), profilestatus::LanguageLine(statuses[i]).c_str());
+    }
+}
+
+/// Picks up committed changes made here or elsewhere (profile editor, tray): a new Ollama
+/// endpoint restarts discovery, a new connection epoch drops test results, and the summaries
+/// are rewritten.
+void syncCommitted() {
+    if (!g.hwnd) return;
     const Settings& s = Settings::shared();
-    SetWindowTextW(ctrl(kLangWarn),
-                   s.nativeLanguage == s.foreignLanguage
-                       ? L"⚠ Native and foreign are the same language — translation won't do anything useful."
-                       : L"TypeTide translates between your native and foreign language. Auto direction detects the text and translates the other way.");
+    const SettingsData& committed = s.committedData();
+    const std::wstring endpoint = util::Widen(committed.ollamaHost) + L":" + std::to_wstring(committed.ollamaPort);
+    if (endpoint != g.ollamaEndpoint) {
+        if (!g.ollamaEndpoint.empty()) ollamamodels::CancelPreload();  // still warming the old host
+        g.ollamaEndpoint = endpoint;
+        ++g.ollamaVersion;
+        g.installed.reset();
+        SetWindowTextW(ctrl(kOllamaEndpoint), endpoint.c_str());
+        fetchOllamaModelsAsync();
+    }
+    if (s.connectionEpoch() != g.connectionEpoch) {
+        g.connectionEpoch = s.connectionEpoch();
+        if (!g.testedProbes.empty()) resetConnectionTests(L"The connection changed. Test again.");
+    }
+    refreshProfileSummary();
+}
+
+/// Tests every bound backend + model once with fixed synthetic text.
+void testBoundModels() {
+    const SettingsSnapshot snapshot = Settings::shared().snapshot();
+    const std::vector<profilestatus::Probe> probes = profilestatus::BoundProbes(snapshot.profileConfig);
+    if (probes.empty()) {
+        resetConnectionTests(L"No profile is bound, so there is nothing to test.");
+        return;
+    }
+    g.connectionEpoch = snapshot.connectionEpoch;
+    const profilestatus::Ticket ticket = g.testGuard.begin(snapshot.connectionEpoch);
+    g.testedProbes = probes;
+    g.testResults.assign(probes.size(), std::nullopt);
+    EnableWindow(ctrl(kTestBound), FALSE);
+    SetWindowTextW(ctrl(kTestStatus), L"Testing with synthetic text…");
+    const execution::ConnectionSnapshot connection = translator::ConnectionFrom(snapshot);
+    HWND target = g.hwnd;
+    for (size_t i = 0; i < probes.size(); ++i) {
+        translator::CheckConnectionAsync(probes[i], connection, [target, ticket, i](translator::HealthCheckResult result) {
+            auto* payload = new ConnectionResult{ticket, i, std::move(result)};
+            if (!PostMessageW(target, kMsgBackendHealth, 0, (LPARAM)payload)) delete payload;
+        });
+    }
+    refreshProfileSummary();
+}
+
+void onConnectionResult(ConnectionResult& payload) {
+    if (!g.testGuard.accepts(payload.ticket, Settings::shared().connectionEpoch()) ||
+        payload.index >= g.testResults.size())
+        return;  // a round that was superseded, or a connection that changed meanwhile
+    g.testResults[payload.index] = std::move(payload.result);
+    size_t finished = 0, failed = 0;
+    for (const auto& result : g.testResults) {
+        if (!result) continue;
+        ++finished;
+        if (!result->ok) ++failed;
+    }
+    if (finished == g.testResults.size()) {
+        const std::wstring count = std::to_wstring(finished) + (finished == 1 ? L" model" : L" models");
+        SetWindowTextW(ctrl(kTestStatus), (failed == 0 ? L"Tested " + count + L": all answered."
+                                                       : L"Tested " + count + L": " + std::to_wstring(failed) +
+                                                             L" failed.").c_str());
+        EnableWindow(ctrl(kTestBound), TRUE);
+        g.backendReady = failed == 0;
+        updateFirstRunCompletion();
+    }
+    refreshProfileSummary();
+}
+
+void onDiscovery(const ollamamodels::Discovery& discovery) {
+    if (!g.discoveryGuard.accepts(discovery.ticket, g.ollamaVersion)) return;  // superseded or stale endpoint
+    if (!discovery.ok) {
+        g.installed.reset();
+        SetWindowTextW(ctrl(kOllamaHint), discovery.error.c_str());
+        refreshProfileSummary();
+        return;
+    }
+    g.installed = discovery.models;
+    std::wstring hint;
+    if (discovery.models.empty()) {
+        hint = L"Ollama is running, but no model is installed. Pull one with `ollama pull`.";
+    } else {
+        hint = std::to_wstring(discovery.models.size()) + L" installed";
+        ULONGLONG memoryKb = 0;
+        double cap = 0;
+        const uint64_t memoryBytes = GetPhysicallyInstalledSystemMemory(&memoryKb)
+            ? (uint64_t)memoryKb * 1024 : 16ULL * 1024 * 1024 * 1024;
+        const std::wstring recommended = ollamamodels::RecommendedForMemory(discovery.models, memoryBytes, &cap);
+        if (!recommended.empty())
+            hint += L" · recommended for this PC: " + recommended + L" (up to about " +
+                    std::to_wstring((int)cap) + L"B)";
+    }
+    SetWindowTextW(ctrl(kOllamaHint), hint.c_str());
+    ollamamodels::OnDiscovered(discovery.models);
+    refreshProfileSummary();
+}
+
+void openProfileManager() {
+    profileswindow::open(g.appWindow);
 }
 
 void buildPages() {
@@ -491,7 +597,7 @@ void buildPages() {
     const int x = 222, w = 560;
     int y;
     const wchar_t* pageTitles[] = {
-        L"General", L"Translation backend", L"Languages", L"Keyboard shortcuts",
+        L"General", L"Translation", L"Languages", L"Keyboard shortcuts",
         L"Behavior", L"Excluded apps", L"Diagnostics", L"About TypeTide"
     };
     for (int page = 0; page < 8; ++page) {
@@ -520,111 +626,93 @@ void buildPages() {
     CheckDlgButton(g.hwnd, kLogin, launchatlogin::IsEnabled() ? BST_CHECKED : BST_UNCHECKED);
     updateFirstRunCompletion();
 
-    // --- 1 Backend ---
+    // --- 1 Translation: binding summaries and connections ---
+    // Language, direction, style, prompt, backend and model live in each profile; this page
+    // only summarizes the bound profiles and keeps the shared connection settings.
     y = 82;
     {
     std::vector<HWND> controls = {
-        makeLabel(L"PROVIDER", x, y, w, -1, true),
-        make(L"BUTTON", L"Built-in (Offline) — TranslateGemma 4B", WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON,
-             x, y + 26, 350, 22, kBackendBuiltIn),
+        makeLabel(L"PROFILES", x, y, w, -1, true),
+        makeText(L"", x, y + 26, w, kSummary1),
+        makeText(L"", x, y + 48, w, kSummary2),
+        makeText(L"", x, y + 70, w, kSummary3),
+        make(L"BUTTON", L"Manage profiles…", WS_TABSTOP | BS_PUSHBUTTON, x, y + 96, 140, 30, kManageProfiles),
+        make(L"BUTTON", L"Test bound models", WS_TABSTOP | BS_PUSHBUTTON, x + 150, y + 96, 150, 30, kTestBound),
+        makeText(L"Uses fixed synthetic text, never your clipboard.", x + 312, y + 102, w - 312, kTestStatus),
+        makeLabel(L"CONNECTIONS", x, y + 142, w, -1, true),
+        makeLabel(L"Built-in model", x, y + 172, 130, -1),
         make(L"BUTTON", L"Download model · 2.49 GB", WS_TABSTOP | BS_PUSHBUTTON,
-             x + 20, y + 52, 225, 30, kBuiltInDownload),
+             x + 140, y + 166, 225, 30, kBuiltInDownload),
         makeLabel(L"One-time download from Hugging Face; selected text stays on this PC.",
-                  x + 20, y + 87, w - 20, kBuiltInStatus),
-        make(L"BUTTON", L"Local (Ollama) — private, offline", WS_TABSTOP | BS_AUTORADIOBUTTON,
-             x, y + 120, 300, 22, kBackendOllama),
-        makeLabel(L"Ollama model", x + 20, y + 150, 90, kOllamaModelLabel),
-        // 可编辑下拉框：列出已装模型，也允许手输
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWN | WS_VSCROLL, x + 120, y + 146, 250, 240, kOllamaModel),
-        make(L"BUTTON", L"Refresh", WS_TABSTOP | BS_PUSHBUTTON, x + 380, y + 145, 80, 32, kOllamaRefresh),
-        makeLabel(L"Ollama at http://127.0.0.1:11434 — run `ollama serve` and pull a model first.",
-                  x + 20, y + 179, w - 20, kOllamaHint),
-        make(L"BUTTON", L"OpenAI-compatible API", WS_TABSTOP | BS_AUTORADIOBUTTON,
-             x, y + 209, 260, 22, kBackendOpenAI),
-        makeLabel(L"Provider", x + 20, y + 238, 90, kOaiProviderLabel),
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 120, y + 234, 250, 180, kOaiProvider),
-        makeLabel(L"Base URL", x + 20, y + 272, 90, kOaiUrlLabel),
-        make(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, x + 120, y + 268, 400, 30, kOaiUrl),
-        makeLabel(L"API key", x + 20, y + 306, 90, kOaiKeyLabel),
-        make(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD, x + 120, y + 302, 400, 30, kOaiKey),
-        makeLabel(L"API model", x + 20, y + 340, 90, kOaiModelLabel),
-        make(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, x + 120, y + 336, 280, 30, kOaiModel),
-        makeLabel(L"API key is stored securely in Windows Credential Manager.",
-                  x + 20, y + 371, w - 20, kOaiHint),
-        makeLabel(L"Privacy: triggered selections are sent to the configured cloud endpoint. "
-                  L"Use a local backend or exclude sensitive apps for private text.",
-                  x + 20, y + 391, w - 20, kPrivacyHint),
-        make(L"BUTTON", L"Test connection", WS_TABSTOP | BS_PUSHBUTTON,
-             x + 20, y + 422, 130, 30, kBackendTest),
-        makeLabel(L"Uses fixed synthetic text, never your clipboard.",
-                  x + 165, y + 428, w - 165, kBackendStatus),
+                  x + 140, y + 200, w - 140, kBuiltInStatus),
+        makeLabel(L"Ollama", x, y + 234, 130, -1),
+        makeText(L"", x + 140, y + 234, 230, kOllamaEndpoint),
+        make(L"BUTTON", L"Refresh", WS_TABSTOP | BS_PUSHBUTTON, x + 380, y + 228, 80, 30, kOllamaRefresh),
+        makeText(L"", x + 140, y + 262, w - 140, kOllamaHint),
+        makeLabel(L"Cloud provider", x, y + 296, 130, kOaiProviderLabel),
+        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 140, y + 292, 250, 180, kOaiProvider),
+        makeLabel(L"Base URL", x, y + 330, 130, kOaiUrlLabel),
+        make(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, x + 140, y + 326, 400, 30, kOaiUrl),
+        makeLabel(L"API key", x, y + 364, 130, kOaiKeyLabel),
+        make(L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD, x + 140, y + 360, 400, 30, kOaiKey),
+        makeLabel(L"The API key is stored securely in Windows Credential Manager. Each profile names its own model.",
+                  x, y + 396, w, kOaiHint),
+        makeLabel(L"Privacy: profiles marked cloud send triggered selections to this endpoint. "
+                  L"Use a local profile or exclude sensitive apps for private text.",
+                  x, y + 418, w, kPrivacyHint),
     };
     g.pages[1].insert(g.pages[1].end(), controls.begin(), controls.end());
     }
-    CheckDlgButton(g.hwnd, s.backend == TranslationBackend::BuiltIn ? kBackendBuiltIn
-                        : s.backend == TranslationBackend::Ollama ? kBackendOllama : kBackendOpenAI, BST_CHECKED);
-    SetWindowTextW(ctrl(kOllamaModel), util::Widen(s.ollamaModel).c_str());
     SetWindowTextW(ctrl(kOaiUrl), util::Widen(s.openAIBaseURL).c_str());
     SetWindowTextW(ctrl(kOaiKey), util::Widen(s.openAIKey).c_str());
-    SetWindowTextW(ctrl(kOaiModel), util::Widen(s.openAIModel).c_str());
     {
         HWND provider = ctrl(kOaiProvider);
         const wchar_t* providers[] = {L"OpenAI", L"OpenRouter", L"DeepSeek", L"Custom endpoint"};
         for (auto* name : providers) SendMessageW(provider, CB_ADDSTRING, 0, (LPARAM)name);
         SendMessageW(provider, CB_SETCURSEL, cloudProviderIndex(s.openAIBaseURL), 0);
     }
-    updateBackendEnabled();
     updateBuiltInStatus();
-    SetWindowPos(ctrl(kPrivacyHint), nullptr,
-                 px(x + 20), px(y + 391), px(w - 20), px(35), SWP_NOZORDER);
+    SetWindowPos(ctrl(kOaiHint), nullptr, px(x), px(y + 396), px(w), px(20), SWP_NOZORDER);
+    SetWindowPos(ctrl(kPrivacyHint), nullptr, px(x), px(y + 418), px(w), px(35), SWP_NOZORDER);
 
-    // --- 2 Language ---
+    // --- 2 Languages: per-profile summary ---
     y = 82;
     {
     std::vector<HWND> controls = {
-        makeLabel(L"Native language:", x, y + 3, 120, kNativeLabel),
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, x + 140, y, 240, 300, kNative),
-        makeLabel(L"Foreign language:", x, y + 37, 120, kForeignLabel),
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, x + 140, y + 34, 240, 300, kForeign),
-        makeLabel(L"Read direction:", x, y + 85, 120, kReadDirLabel),
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 140, y + 82, 240, 200, kReadDir),
-        makeLabel(L"Rewrite direction:", x, y + 119, 120, kRewriteDirLabel),
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 140, y + 116, 240, 200, kRewriteDir),
-        makeLabel(L"", x, y + 156, w, kLangWarn),
+        makeLabel(L"Languages, direction and style belong to each translation profile.", x, y, w, -1),
+        makeText(L"", x, y + 34, w, kLanguage1),
+        makeText(L"", x, y + 56, w, kLanguage2),
+        makeText(L"", x, y + 78, w, kLanguage3),
+        make(L"BUTTON", L"Manage profiles…", WS_TABSTOP | BS_PUSHBUTTON, x, y + 112, 140, 30, kLanguageManage),
     };
     g.pages[2].insert(g.pages[2].end(), controls.begin(), controls.end());
     }
-    fillLanguageCombo(ctrl(kNative), s.nativeLanguage);
-    fillLanguageCombo(ctrl(kForeign), s.foreignLanguage);
-    fillDirectionCombo(ctrl(kReadDir), s.readDirection);
-    fillDirectionCombo(ctrl(kRewriteDir), s.rewriteDirection);
-    updateLangWarn();
-    // 警告区两行高
-    SetWindowPos(ctrl(kLangWarn), nullptr, px(x), px(y + 156), px(w), px(40), SWP_NOZORDER);
 
     // --- 3 Shortcuts ---
     y = 82;
     {
     std::vector<HWND> controls = {
-        makeLabel(L"Translate selection (read):", x, y + 4, 180, kHkReadLabel),
+        makeLabel(L"Shortcut 1:", x, y + 4, 180, kHkReadLabel),
         make(HOTKEY_CLASSW, L"", WS_TABSTOP, x + 195, y, 155, 24, kHkRead),
         make(L"BUTTON", L"Win key", WS_TABSTOP | BS_AUTOCHECKBOX, x + 365, y + 1, 80, 22, kReadWin),
         make(L"BUTTON", L"Clear", WS_TABSTOP | BS_PUSHBUTTON, x + 455, y, 64, 24, kHkReadClear),
-        makeLabel(L"Rewrite && replace (write):", x, y + 38, 180, kHkRewriteLabel),
+        makeLabel(L"Shortcut 2:", x, y + 38, 180, kHkRewriteLabel),
         make(HOTKEY_CLASSW, L"", WS_TABSTOP, x + 195, y + 34, 155, 24, kHkRewrite),
         make(L"BUTTON", L"Win key", WS_TABSTOP | BS_AUTOCHECKBOX, x + 365, y + 35, 80, 22, kRewriteWin),
         make(L"BUTTON", L"Clear", WS_TABSTOP | BS_PUSHBUTTON, x + 455, y + 34, 64, 24, kHkRewriteClear),
-        makeLabel(L"Translate action:", x, y + 76, 180, kReadActionLabel),
+        makeLabel(L"Shortcut 1 action:", x, y + 76, 180, kReadActionLabel),
         make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 195, y + 72, 300, 220, kReadAction),
-        makeLabel(L"Rewrite action:", x, y + 110, 180, kRewriteActionLabel),
+        makeLabel(L"Shortcut 2 action:", x, y + 110, 180, kRewriteActionLabel),
         make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 195, y + 106, 300, 220, kRewriteAction),
         make(L"BUTTON", L"Restore defaults", WS_TABSTOP | BS_PUSHBUTTON, x, y + 150, 120, 28, kHkRestoreDefaults),
         make(L"BUTTON", L"Verify shortcuts", WS_TABSTOP | BS_PUSHBUTTON, x + 130, y + 150, 120, 28, kHkVerify),
-        makeLabel(L"Changes apply immediately. Keep at least one shortcut; configured shortcuts must be different.",
+        makeLabel(L"Changes apply immediately. Keep at least one shortcut; configured shortcuts must be different. "
+                  L"Each shortcut runs the profile bound to it on the Translation page.",
                   x, y + 190, w, kHkNote),
     };
     g.pages[3].insert(g.pages[3].end(), controls.begin(), controls.end());
     }
+    SetWindowPos(ctrl(kHkNote), nullptr, px(x), px(y + 190), px(w), px(36), SWP_NOZORDER);
     SendMessageW(ctrl(kHkRead), HKM_SETHOTKEY, hotkeyToControl(s.readShortcut), 0);
     SendMessageW(ctrl(kHkRewrite), HKM_SETHOTKEY, hotkeyToControl(s.rewriteShortcut), 0);
     CheckDlgButton(g.hwnd, kReadWin, s.readShortcut.modifiers & MOD_WIN ? BST_CHECKED : BST_UNCHECKED);
@@ -641,10 +729,8 @@ void buildPages() {
         make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 150, y, 230, 200, kTrigger),
         make(L"BUTTON", L"Preview before replacing (rewrite)", WS_TABSTOP | BS_AUTOCHECKBOX,
              x, y + 44, w, 22, kPreview),
-        makeLabel(L"Read style:", x, y + 87, 130, kReadStyleLabel),
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 150, y + 84, 230, 200, kReadStyle),
-        makeLabel(L"Rewrite style:", x, y + 121, 130, kRewriteStyleLabel),
-        make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, x + 150, y + 118, 230, 200, kRewriteStyle),
+        makeLabel(L"Styles and custom prompts are set per profile: Translation → Manage profiles.",
+                  x, y + 84, w, kBehaviorNote),
     };
     g.pages[4].insert(g.pages[4].end(), controls.begin(), controls.end());
     }
@@ -655,8 +741,6 @@ void buildPages() {
         SendMessageW(trig, CB_SETCURSEL, (int)s.selectionTrigger, 0);
     }
     CheckDlgButton(g.hwnd, kPreview, s.rewritePreview ? BST_CHECKED : BST_UNCHECKED);
-    fillStyleCombo(ctrl(kReadStyle), s.readStyle);
-    fillStyleCombo(ctrl(kRewriteStyle), s.rewriteStyle);
 
     // --- 5 Skip Apps ---
     y = 82;
@@ -787,13 +871,6 @@ void onCommand(int id, int code) {
         save = false;
         break;
 
-    case kBackendBuiltIn:
-    case kBackendOllama:
-    case kBackendOpenAI:
-        s.backend = id == kBackendBuiltIn ? TranslationBackend::BuiltIn
-                  : id == kBackendOllama ? TranslationBackend::Ollama : TranslationBackend::OpenAI;
-        updateBackendEnabled();
-        break;
     case kBuiltInDownload:
         if (g.modelDownloadCancel) {
             g.modelDownloadCancel->store(true);
@@ -816,20 +893,6 @@ void onCommand(int id, int code) {
         }
         save = false;
         break;
-    case kOllamaModel:
-        if (code == CBN_SELCHANGE) {
-            int sel = (int)SendMessageW(ctrl(kOllamaModel), CB_GETCURSEL, 0, 0);
-            if (sel < 0) return;
-            int len = (int)SendMessageW(ctrl(kOllamaModel), CB_GETLBTEXTLEN, sel, 0);
-            std::wstring m(len, 0);
-            SendMessageW(ctrl(kOllamaModel), CB_GETLBTEXT, sel, (LPARAM)m.data());
-            s.ollamaModel = util::Narrow(m);
-        } else if (code == CBN_EDITCHANGE) {
-            s.ollamaModel = util::Narrow(editText(ctrl(kOllamaModel)));
-        } else {
-            return;
-        }
-        break;
     case kOllamaRefresh:
         fetchOllamaModelsAsync();
         save = false;
@@ -838,53 +901,30 @@ void onCommand(int id, int code) {
         if (code != CBN_SELCHANGE) return;
         applyCloudProviderPreset((int)SendMessageW(ctrl(kOaiProvider), CB_GETCURSEL, 0, 0));
         break;
-    case kOaiUrl:
-        if (code != EN_CHANGE) return;
-        s.openAIBaseURL = util::Narrow(editText(ctrl(kOaiUrl)));
-        break;
-    case kOaiKey:
+    case kOaiUrl: {
+        // Committed when the field is left, so a half-typed host is never used by a trigger.
         if (code != EN_KILLFOCUS) return;
-        s.openAIKey = util::Narrow(editText(ctrl(kOaiKey)));
+        const std::string url = util::Narrow(util::Trim(editText(ctrl(kOaiUrl))));
+        if (url == s.openAIBaseURL) return;
+        s.openAIBaseURL = url;
+        SendMessageW(ctrl(kOaiProvider), CB_SETCURSEL, cloudProviderIndex(url), 0);
         break;
-    case kOaiModel:
-        if (code != EN_CHANGE) return;
-        s.openAIModel = util::Narrow(editText(ctrl(kOaiModel)));
+    }
+    case kOaiKey: {
+        if (code != EN_KILLFOCUS) return;
+        const std::string key = util::Narrow(util::Trim(editText(ctrl(kOaiKey))));
+        if (key == s.openAIKey) return;
+        s.openAIKey = key;
         break;
-    case kBackendTest:
-        EnableWindow(ctrl(kBackendTest), FALSE);
-        SetWindowTextW(ctrl(kBackendTest), L"Testing…");
-        SetWindowTextW(ctrl(kBackendStatus), L"Connecting and translating synthetic text…");
-        {
-        HWND target = g.hwnd;
-        translator::CheckHealthAsync([target](translator::HealthCheckResult result) {
-            auto* payload = new translator::HealthCheckResult(std::move(result));
-            if (!PostMessageW(target, kMsgBackendHealth, 0, (LPARAM)payload)) delete payload;
-        });
-        }
+    }
+    case kTestBound:
+        testBoundModels();
         save = false;
         break;
-
-    case kNative:
-        if (code != CBN_SELCHANGE) return;
-        s.nativeLanguage = comboLanguage(ctrl(kNative));
-        fillDirectionCombo(ctrl(kReadDir), s.readDirection);
-        fillDirectionCombo(ctrl(kRewriteDir), s.rewriteDirection);
-        updateLangWarn();
-        break;
-    case kForeign:
-        if (code != CBN_SELCHANGE) return;
-        s.foreignLanguage = comboLanguage(ctrl(kForeign));
-        fillDirectionCombo(ctrl(kReadDir), s.readDirection);
-        fillDirectionCombo(ctrl(kRewriteDir), s.rewriteDirection);
-        updateLangWarn();
-        break;
-    case kReadDir:
-        if (code != CBN_SELCHANGE) return;
-        s.readDirection = (TranslationDirection)SendMessageW(ctrl(kReadDir), CB_GETCURSEL, 0, 0);
-        break;
-    case kRewriteDir:
-        if (code != CBN_SELCHANGE) return;
-        s.rewriteDirection = (TranslationDirection)SendMessageW(ctrl(kRewriteDir), CB_GETCURSEL, 0, 0);
+    case kManageProfiles:
+    case kLanguageManage:
+        openProfileManager();
+        save = false;
         break;
 
     case kHkRead:
@@ -900,7 +940,7 @@ void onCommand(int id, int code) {
             }
             if (IsDlgButtonChecked(g.hwnd, kReadWin) == BST_CHECKED) hk.modifiers |= MOD_WIN;
             if (s.rewriteShortcut.isConfigured() && hk == s.rewriteShortcut) {
-                MessageBoxW(g.hwnd, L"Translate and rewrite must use different shortcuts.",
+                MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
                             L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
                 SendMessageW(ctrl(kHkRead), HKM_SETHOTKEY, hotkeyToControl(s.readShortcut), 0);
                 return;
@@ -923,7 +963,7 @@ void onCommand(int id, int code) {
             }
             if (IsDlgButtonChecked(g.hwnd, kRewriteWin) == BST_CHECKED) hk.modifiers |= MOD_WIN;
             if (s.readShortcut.isConfigured() && hk == s.readShortcut) {
-                MessageBoxW(g.hwnd, L"Translate and rewrite must use different shortcuts.",
+                MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
                             L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
                 SendMessageW(ctrl(kHkRewrite), HKM_SETHOTKEY, hotkeyToControl(s.rewriteShortcut), 0);
                 return;
@@ -941,7 +981,7 @@ void onCommand(int id, int code) {
         if (IsDlgButtonChecked(g.hwnd, kReadWin) == BST_CHECKED) s.readShortcut.modifiers |= MOD_WIN;
         else s.readShortcut.modifiers &= ~MOD_WIN;
         if (s.rewriteShortcut.isConfigured() && s.readShortcut == s.rewriteShortcut) {
-            MessageBoxW(g.hwnd, L"Translate and rewrite must use different shortcuts.",
+            MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
                         L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
             s.readShortcut.modifiers ^= MOD_WIN;
             CheckDlgButton(g.hwnd, kReadWin,
@@ -958,7 +998,7 @@ void onCommand(int id, int code) {
         if (IsDlgButtonChecked(g.hwnd, kRewriteWin) == BST_CHECKED) s.rewriteShortcut.modifiers |= MOD_WIN;
         else s.rewriteShortcut.modifiers &= ~MOD_WIN;
         if (s.readShortcut.isConfigured() && s.readShortcut == s.rewriteShortcut) {
-            MessageBoxW(g.hwnd, L"Translate and rewrite must use different shortcuts.",
+            MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
                         L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
             s.rewriteShortcut.modifiers ^= MOD_WIN;
             CheckDlgButton(g.hwnd, kRewriteWin,
@@ -1025,18 +1065,18 @@ void onCommand(int id, int code) {
     case kPreview:
         s.rewritePreview = IsDlgButtonChecked(g.hwnd, kPreview) == BST_CHECKED;
         break;
-    case kReadStyle:
-        if (code != CBN_SELCHANGE) return;
-        s.readStyle = comboStyle(ctrl(kReadStyle));
-        break;
-    case kRewriteStyle:
-        if (code != CBN_SELCHANGE) return;
-        s.rewriteStyle = comboStyle(ctrl(kRewriteStyle));
-        break;
-
     case kSkipAdd: {
         std::wstring app = util::Trim(editText(ctrl(kSkipEdit)));
         if (app.empty()) { save = false; break; }
+        // The settings file allows 100 entries of up to 260 characters; more would fail every save.
+        if (s.skipApps.size() >= 100 || app.size() > 260) {
+            MessageBoxW(g.hwnd, s.skipApps.size() >= 100
+                                    ? L"TypeTide can exclude up to 100 apps. Remove one first."
+                                    : L"That name is too long. Enter the program's file name, such as notepad.exe.",
+                        L"TypeTide — excluded apps", MB_OK | MB_ICONWARNING);
+            save = false;
+            break;
+        }
         for (auto& e : s.skipApps)
             if (util::ToLower(e) == util::ToLower(app)) { save = false; break; }
         if (!save) break;
@@ -1092,6 +1132,7 @@ void onCommand(int id, int code) {
         }
     }
     if (reapply) applyToApp();
+    syncCommitted();  // a saved connection change drops stale model lists and test results
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1108,32 +1149,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         onCommand(LOWORD(wp), HIWORD(wp));
         return 0;
-    case kMsgOllamaModels: {
-        auto* models = (std::vector<std::wstring>*)lp;
-        ollamamodels::ApplyResolvedModels(*models);
-        HWND combo = ctrl(kOllamaModel);
-        if (combo) {
-            std::wstring current = util::Widen(Settings::shared().ollamaModel);
-            SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-            for (auto& m : *models)
-                SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)m.c_str());
-            SetWindowTextW(combo, current.c_str());
-        }
-        ULONGLONG memoryKb = 0;
-        double cap = 0;
-        const uint64_t memoryBytes = GetPhysicallyInstalledSystemMemory(&memoryKb)
-            ? (uint64_t)memoryKb * 1024 : 16ULL * 1024 * 1024 * 1024;
-        const std::wstring recommended = ollamamodels::RecommendedForMemory(*models, memoryBytes, &cap);
-        if (!recommended.empty()) {
-            std::wstring hint = L"Recommended for this PC: " + recommended +
-                L" (comfortable target up to about " + std::to_wstring((int)cap) +
-                L"B). Ollama runs locally.";
-            SetWindowTextW(ctrl(kOllamaHint), hint.c_str());
-        }
-        ollamamodels::PreloadAsync();
-        delete models;
+    case kMsgOllamaModels:
+        onDiscovery(*std::unique_ptr<ollamamodels::Discovery>((ollamamodels::Discovery*)lp));
         return 0;
-    }
     case kMsgUpdateResult:
         EnableWindow(ctrl(kCheckUpdate), TRUE);
         SetWindowTextW(ctrl(kCheckUpdate), L"Check for updates");
@@ -1150,23 +1168,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         L"TypeTide update", MB_OK | MB_ICONWARNING);
         }
         return 0;
-    case kMsgBackendHealth: {
-        auto* result = (translator::HealthCheckResult*)lp;
-        EnableWindow(ctrl(kBackendTest), TRUE);
-        SetWindowTextW(ctrl(kBackendTest), L"Test connection");
-        std::wstring status = result->message;
-        if (result->ok) {
-            status += L"  ";
-            if (result->firstTokenMs >= 0)
-                status += L"First token " + std::to_wstring(result->firstTokenMs) + L" ms · ";
-            status += L"Total " + std::to_wstring(result->totalMs) + L" ms";
-        }
-        SetWindowTextW(ctrl(kBackendStatus), status.c_str());
-        g.backendReady = result->ok;
-        updateFirstRunCompletion();
-        delete result;
+    case kMsgBackendHealth:
+        onConnectionResult(*std::unique_ptr<ConnectionResult>((ConnectionResult*)lp));
         return 0;
-    }
     case kMsgBuiltInProgress: {
         auto* progress = reinterpret_cast<BuiltInProgress*>(lp);
         if (progress->done) g.modelDownloadCancel.reset();
@@ -1257,7 +1261,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g.highContrast = ui::highContrastEnabled();
         applyTheme(hwnd);
         return 0;
+    case WM_ACTIVATE:
+        if (LOWORD(wp) != WA_INACTIVE) syncCommitted();  // e.g. back from the profile editor
+        break;
     case WM_CLOSE:
+        // Edits still in a focused connection field are committed like a focus change.
+        onCommand(kOaiUrl, EN_KILLFOCUS);
+        onCommand(kOaiKey, EN_KILLFOCUS);
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
@@ -1271,6 +1281,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g.tabImages) { ImageList_Destroy(g.tabImages); g.tabImages = nullptr; }
         g.hwnd = nullptr;
         g.pages.clear();
+        // Results still in flight are posted to a dead window and freed by their senders.
+        g.discoveryGuard.invalidate();
+        g.testGuard.invalidate();
+        g.ollamaEndpoint.clear();
+        g.installed.reset();
+        g.testedProbes.clear();
+        g.testResults.clear();
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1279,6 +1296,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 } // namespace
 
 namespace SettingsWindow {
+
+void profilesChanged() {
+    syncCommitted();
+}
 
 void open(HWND appWindow) {
     if (g.hwnd) {
@@ -1310,8 +1331,9 @@ void open(HWND appWindow) {
     RECT wr{0, 0, w, h};
     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
 
+    // Shown at the end, once every page and summary is filled.
     g.hwnd = CreateWindowExW(0, kClassName, L"TypeTide Settings",
-                             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                             WS_OVERLAPPEDWINDOW,
                              CW_USEDEFAULT, CW_USEDEFAULT,
                              wr.right - wr.left, wr.bottom - wr.top,
                              nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -1363,9 +1385,10 @@ void open(HWND appWindow) {
     showPage(0);
     g.loading = false;
 
-    // 异步填充 Ollama 模型下拉框
-    fetchOllamaModelsAsync();
+    // Summaries, the Ollama endpoint and its (asynchronous) model list.
+    syncCommitted();
 
+    ShowWindow(g.hwnd, SW_SHOWNORMAL);
     SetForegroundWindow(g.hwnd);
 }
 

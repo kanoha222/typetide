@@ -6,11 +6,25 @@
 //  粘贴发生了，再还原剪贴板——比赌固定延迟可靠。
 //
 #pragma once
+#include "TranslationSession.h"
 #include <string>
 
 namespace replacer {
 
+enum class ReplaceOutcome {
+    Pasted,                // Ctrl+V issued and the target read the clipboard
+    PasteNotConsumed,      // Ctrl+V issued but nothing read the clipboard within 2 s
+    AbortedStale,          // a newer translation superseded this one before input was committed
+    AbortedTargetChanged,  // the captured window or its focused control is no longer in front
+    ClipboardUnavailable,  // the clipboard could not be saved or did not hold our text: no input
+};
+
 /// 用译文替换（异步，立即返回）。selectAll=true 时先 Ctrl+A 全选（整框改写）。
-void ReplaceAsync(std::wstring text, bool selectAll);
+/// `guard` is checked before the clipboard is touched and before each injected key: a newer
+/// translation or a different foreground window aborts the paste and keeps the clipboard.
+void ReplaceAsync(std::wstring text, bool selectAll, session::PasteGuard guard);
+
+/// Synchronous worker body for the runtime self-test. Blocks; never call on the UI thread.
+ReplaceOutcome ReplaceForTesting(const std::wstring& text, bool selectAll, const session::PasteGuard& guard);
 
 } // namespace replacer

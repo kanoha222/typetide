@@ -1,11 +1,18 @@
 #include "Json.h"
-#include <cctype>
+#include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
+#include <string>
+#include <system_error>
+#include <utility>
 
 namespace json {
 
 namespace {
+
+constexpr std::size_t MaxNestingDepth = 64;
 
 struct Parser {
     const char* p;
@@ -22,12 +29,16 @@ struct Parser {
         return false;
     }
 
-    Value parseValue() {
+    Value parseValue(std::size_t depth = 0) {
         skipWs();
         if (p >= end) { ok = false; return {}; }
+        if ((*p == '{' || *p == '[') && depth >= MaxNestingDepth) {
+            ok = false;
+            return {};
+        }
         switch (*p) {
-        case '{': return parseObject();
-        case '[': return parseArray();
+        case '{': return parseObject(depth + 1);
+        case '[': return parseArray(depth + 1);
         case '"': return Value(parseString());
         case 't': return parseLit("true", Value(true));
         case 'f': return parseLit("false", Value(false));
@@ -37,16 +48,41 @@ struct Parser {
     }
 
     Value parseLit(const char* lit, Value v) {
-        size_t n = strlen(lit);
-        if ((size_t)(end - p) >= n && memcmp(p, lit, n) == 0) { p += n; return v; }
+        const std::size_t n = std::strlen(lit);
+        if ((std::size_t)(end - p) >= n && std::memcmp(p, lit, n) == 0) { p += n; return v; }
         ok = false; return {};
     }
 
+    bool consumeDigits() {
+        const char* first = p;
+        while (p < end && *p >= '0' && *p <= '9') ++p;
+        return p != first;
+    }
+
     Value parseNumber() {
-        char* endp = nullptr;
-        double d = strtod(p, &endp);
-        if (endp == p) { ok = false; return {}; }
-        p = endp;
+        const char* first = p;
+        if (p < end && *p == '-') ++p;
+        if (p >= end) { ok = false; return {}; }
+        if (*p == '0') {
+            ++p;
+            if (p < end && *p >= '0' && *p <= '9') { ok = false; return {}; }
+        } else if (*p >= '1' && *p <= '9') consumeDigits();
+        else { ok = false; return {}; }
+        if (p < end && *p == '.') {
+            ++p;
+            if (!consumeDigits()) { ok = false; return {}; }
+        }
+        if (p < end && (*p == 'e' || *p == 'E')) {
+            ++p;
+            if (p < end && (*p == '+' || *p == '-')) ++p;
+            if (!consumeDigits()) { ok = false; return {}; }
+        }
+        double d = 0;
+        const auto parsed = std::from_chars(first, p, d, std::chars_format::general);
+        if (parsed.ec != std::errc{} || parsed.ptr != p || !std::isfinite(d)) {
+            ok = false;
+            return {};
+        }
         return Value(d);
     }
 
@@ -68,8 +104,9 @@ struct Parser {
     }
 
     unsigned parseHex4() {
+        if (end - p < 4) { ok = false; return 0; }
         unsigned v = 0;
-        for (int i = 0; i < 4 && p < end; ++i, ++p) {
+        for (int i = 0; i < 4; ++i, ++p) {
             char c = *p;
             v <<= 4;
             if (c >= '0' && c <= '9') v |= c - '0';
@@ -80,46 +117,82 @@ struct Parser {
         return v;
     }
 
+    void parseUnicodeEscape(std::string& out) {
+        unsigned cp = parseHex4();
+        if (!ok) return;
+        if (cp >= 0xD800 && cp <= 0xDBFF) {
+            if (end - p < 6 || p[0] != '\\' || p[1] != 'u') { ok = false; return; }
+            p += 2;
+            const unsigned lo = parseHex4();
+            if (!ok || lo < 0xDC00 || lo > 0xDFFF) { ok = false; return; }
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+        } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+            ok = false;
+            return;
+        }
+        appendUtf8(out, cp);
+    }
+
+    void parseEscape(std::string& out) {
+        if (p >= end) { ok = false; return; }
+        switch (*p++) {
+        case '"': out += '"'; break;
+        case '\\': out += '\\'; break;
+        case '/': out += '/'; break;
+        case 'b': out += '\b'; break;
+        case 'f': out += '\f'; break;
+        case 'n': out += '\n'; break;
+        case 'r': out += '\r'; break;
+        case 't': out += '\t'; break;
+        case 'u': parseUnicodeEscape(out); break;
+        default: ok = false; break;
+        }
+    }
+
+    void parseRawUtf8(std::string& out) {
+        const auto lead = static_cast<unsigned char>(*p);
+        std::size_t length = 0;
+        unsigned cp = 0;
+        unsigned minimum = 0;
+        if (lead >= 0xC2 && lead <= 0xDF) {
+            length = 2; cp = lead & 0x1F; minimum = 0x80;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            length = 3; cp = lead & 0x0F; minimum = 0x800;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            length = 4; cp = lead & 0x07; minimum = 0x10000;
+        } else { ok = false; return; }
+        if (static_cast<std::size_t>(end - p) < length) { ok = false; return; }
+        for (std::size_t i = 1; i < length; ++i) {
+            const auto next = static_cast<unsigned char>(p[i]);
+            if ((next & 0xC0) != 0x80) { ok = false; return; }
+            cp = (cp << 6) | (next & 0x3F);
+        }
+        if (cp < minimum || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            ok = false;
+            return;
+        }
+        out.append(p, length);
+        p += length;
+    }
+
     std::string parseString() {
         std::string out;
         if (p >= end || *p != '"') { ok = false; return out; }
         ++p;
-        while (p < end && *p != '"') {
-            if (*p == '\\') {
+        while (ok && p < end && *p != '"') {
+            const auto c = static_cast<unsigned char>(*p);
+            if (c == '\\') {
                 ++p;
-                if (p >= end) { ok = false; break; }
-                switch (*p) {
-                case '"': out += '"'; ++p; break;
-                case '\\': out += '\\'; ++p; break;
-                case '/': out += '/'; ++p; break;
-                case 'b': out += '\b'; ++p; break;
-                case 'f': out += '\f'; ++p; break;
-                case 'n': out += '\n'; ++p; break;
-                case 'r': out += '\r'; ++p; break;
-                case 't': out += '\t'; ++p; break;
-                case 'u': {
-                    ++p;
-                    unsigned cp = parseHex4();
-                    // 代理对
-                    if (cp >= 0xD800 && cp <= 0xDBFF && end - p >= 6 && p[0] == '\\' && p[1] == 'u') {
-                        p += 2;
-                        unsigned lo = parseHex4();
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                    }
-                    appendUtf8(out, cp);
-                    break;
-                }
-                default: ok = false; ++p; break;
-                }
-            } else {
-                out += *p++;
-            }
+                parseEscape(out);
+            } else if (c < 0x20) ok = false;
+            else if (c < 0x80) out += *p++;
+            else parseRawUtf8(out);
         }
-        if (p < end && *p == '"') ++p; else ok = false;
+        if (ok && p < end && *p == '"') ++p; else ok = false;
         return out;
     }
 
-    Value parseObject() {
+    Value parseObject(std::size_t depth) {
         ++p; // '{'
         Object obj;
         skipWs();
@@ -128,7 +201,7 @@ struct Parser {
             skipWs();
             std::string key = parseString();
             if (!ok || !consume(':')) { ok = false; break; }
-            obj[key] = parseValue();
+            obj[key] = parseValue(depth);
             if (!ok) break;
             if (consume(',')) continue;
             if (consume('}')) break;
@@ -137,13 +210,13 @@ struct Parser {
         return Value(std::move(obj));
     }
 
-    Value parseArray() {
+    Value parseArray(std::size_t depth) {
         ++p; // '['
         Array arr;
         skipWs();
         if (consume(']')) return Value(std::move(arr));
         while (ok) {
-            arr.push_back(parseValue());
+            arr.push_back(parseValue(depth));
             if (!ok) break;
             if (consume(',')) continue;
             if (consume(']')) break;
@@ -207,6 +280,7 @@ Value Parse(const std::string& text, bool* okOut) {
     Parser parser{text.data(), text.data() + text.size()};
     Value v = parser.parseValue();
     parser.skipWs();
+    parser.ok = parser.ok && parser.p == parser.end;
     if (okOut) *okOut = parser.ok;
     return parser.ok ? v : Value();
 }

@@ -1,0 +1,546 @@
+#include "RuntimeSelfTest.h"
+#include "Clipboard.h"
+#include "Json.h"
+#include "OllamaModels.h"
+#include "ProfileBinding.h"
+#include "ProfileStatus.h"
+#include "Settings.h"
+#include "TextReplacer.h"
+#include "TranslationExecution.h"
+#include "TranslationSession.h"
+#include "Translator.h"
+#include "Util.h"
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
+#include <future>
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+// Loopback mock only, synthetic text and a synthetic key: never a real provider, credential
+// or user selection. The mock records each request (path, raw body, whether an
+// Authorization header was present) as one JSON line, never the header value.
+namespace {
+
+int g_failures = 0;
+
+bool check(bool cond, const char* name, const std::string& detail = {}) {
+    if (cond) {
+        printf("  ok   %s\n", name);
+    } else {
+        ++g_failures;
+        printf("  FAIL %s%s%s\n", name, detail.empty() ? "" : " -- ", detail.c_str());
+    }
+    return cond;
+}
+
+constexpr char kKey[] = "synthetic-runtime-key";
+constexpr wchar_t kExactReply[] = L"  EXACT_OUTPUT\n\tline 2\n";
+constexpr wchar_t kDefaultReply[] = L"MOCK_TRANSLATION_OK";
+constexpr char kTemplate[] = "Translate {{source_language}} into {{target_language}}.";
+
+struct MockEnv {
+    int port = 0;
+    std::wstring recordPath;
+};
+
+std::wstring EnvValue(const wchar_t* name) {
+    wchar_t buffer[1024]{};
+    const DWORD length = GetEnvironmentVariableW(name, buffer, 1024);
+    return length && length < 1024 ? std::wstring(buffer, length) : std::wstring();
+}
+
+struct Recorded {
+    std::string path;
+    std::string body;
+    bool auth = false;
+};
+
+std::vector<Recorded> ReadRecords(const MockEnv& env) {
+    std::vector<Recorded> records;
+    std::ifstream in(env.recordPath, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("\xEF\xBB\xBF", 0) == 0) line.erase(0, 3);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        bool ok = false;
+        const json::Value value = json::Parse(line, &ok);
+        if (ok) records.push_back({value["path"].asString(), value["body"].asString(), value["auth"].asBool()});
+    }
+    return records;
+}
+
+std::string Base(const MockEnv& env) {
+    return "http://127.0.0.1:" + std::to_string(env.port) + "/v1";
+}
+
+execution::ConnectionSnapshot Connection(const MockEnv& env, uint64_t epoch = 1) {
+    execution::ConnectionSnapshot connection;
+    connection.connectionEpoch = epoch;
+    connection.ollamaHost = "http://127.0.0.1";
+    connection.ollamaPort = env.port;
+    connection.openAIBaseURL = Base(env);
+    connection.openAIKey = kKey;
+    return connection;
+}
+
+TranslationProfile Profile(TranslationBackend backend, const char* model, bool custom) {
+    TranslationProfile profile;
+    profile.id = "runtime-test";
+    profile.name = "Runtime test";
+    profile.promptMode = custom ? PromptMode::Custom : PromptMode::Preset;
+    profile.systemPrompt = custom ? kTemplate : "";
+    profile.backend = backend;
+    profile.model = model;
+    return profile;
+}
+
+struct Outcome {
+    std::optional<std::wstring> text;
+    std::wstring error;
+};
+
+Outcome Run(const TranslationProfile& profile, const execution::ConnectionSnapshot& connection,
+            const std::wstring& text) {
+    Outcome outcome;
+    outcome.text = translator::TranslateFully(
+        execution::Freeze(profile, ShortcutAction::SmartPopup, connection), text, &outcome.error);
+    return outcome;
+}
+
+execution::PreparedRequest Prepared(const TranslationProfile& profile,
+                                    const execution::ConnectionSnapshot& connection,
+                                    const std::wstring& text) {
+    return execution::Prepare(*execution::Freeze(profile, ShortcutAction::SmartPopup, connection), text);
+}
+
+void testPresetOpenAI(const MockEnv& env) {
+    printf("[preset OpenAI]\n");
+    const TranslationProfile profile = Profile(TranslationBackend::OpenAI, "mock-default", false);
+    const std::wstring text = L"The cat is in the house and it is that (preset)";
+    const size_t before = ReadRecords(env).size();
+    const Outcome outcome = Run(profile, Connection(env), text);
+    check(outcome.text == std::optional<std::wstring>(kDefaultReply), "translation completes",
+          util::Narrow(outcome.error));
+    const std::vector<Recorded> records = ReadRecords(env);
+    if (!check(records.size() == before + 1, "exactly one request is sent")) return;
+    const Recorded& request = records.back();
+    check(request.path == "/v1/chat/completions", "request path", request.path);
+    check(request.body == Prepared(profile, Connection(env), text).body, "wire body equals the prepared body");
+    check(request.auth, "the Authorization header is present");
+}
+
+void testExactOutput(const MockEnv& env) {
+    printf("[exact output]\n");
+    const std::wstring text = L"The cat is in the house and it is that (exact)";
+    const Outcome custom = Run(Profile(TranslationBackend::OpenAI, "mock-exact", true), Connection(env), text);
+    check(custom.text == std::optional<std::wstring>(kExactReply),
+          "custom output keeps indentation, tabs and the trailing newline", util::Narrow(custom.error));
+    const Outcome preset = Run(Profile(TranslationBackend::OpenAI, "mock-exact", false), Connection(env), text);
+    check(preset.text == std::optional<std::wstring>(L"EXACT_OUTPUT\n\tline 2"),
+          "preset output keeps the legacy trim", util::Narrow(preset.error));
+}
+
+void testOllamaCustom(const MockEnv& env) {
+    printf("[custom Ollama]\n");
+    const TranslationProfile profile = Profile(TranslationBackend::Ollama, "mock-exact", true);
+    const std::wstring text = L"The cat is in the house and it is that (ollama)";
+    const size_t before = ReadRecords(env).size();
+    const Outcome outcome = Run(profile, Connection(env), text);
+    check(outcome.text == std::optional<std::wstring>(kExactReply), "custom Ollama output is exact",
+          util::Narrow(outcome.error));
+    const std::vector<Recorded> records = ReadRecords(env);
+    if (!check(records.size() == before + 1, "exactly one Ollama request is sent")) return;
+    const Recorded& request = records.back();
+    check(request.path == "/api/generate", "Ollama request path", request.path);
+    check(request.body == Prepared(profile, Connection(env), text).body, "Ollama wire body equals the prepared body");
+    const json::Value body = json::Parse(request.body);
+    check(body["system"].asString() == "Translate English into Chinese." &&
+              body["prompt"].asString() == util::Narrow(text),
+          "system carries the rendered template and prompt the original text");
+    check(!request.auth, "Ollama requests never carry an Authorization header");
+}
+
+void testThinkRetry(const MockEnv& env) {
+    printf("[Ollama think retry]\n");
+    const TranslationProfile profile = Profile(TranslationBackend::Ollama, "mock-reject-think", false);
+    const std::wstring text = L"The cat is in the house and it is that (think)";
+    const size_t before = ReadRecords(env).size();
+    const Outcome outcome = Run(profile, Connection(env), text);
+    check(outcome.text == std::optional<std::wstring>(kDefaultReply), "HTTP 400 on think is retried without it",
+          util::Narrow(outcome.error));
+    const std::vector<Recorded> records = ReadRecords(env);
+    if (!check(records.size() == before + 2, "exactly two requests are sent")) return;
+    const execution::PreparedRequest prepared = Prepared(profile, Connection(env), text);
+    check(records[before].body == prepared.body, "the first request is the initial body");
+    check(records[before + 1].body == prepared.retryBody, "the retry is the prepared retry body");
+}
+
+void testCacheAndEpoch(const MockEnv& env) {
+    printf("[cache and connection epoch]\n");
+    const TranslationProfile profile = Profile(TranslationBackend::OpenAI, "mock-exact", true);
+    const std::wstring text = L"The cat is in the house and it is that (cache)";
+    const size_t before = ReadRecords(env).size();
+    const Outcome first = Run(profile, Connection(env, 1), text);
+    const Outcome second = Run(profile, Connection(env, 1), text);
+    check(first.text && first.text == second.text, "a cache hit returns the identical exact output",
+          util::Narrow(first.error));
+    check(ReadRecords(env).size() == before + 1, "the cache hit sends no request");
+    const Outcome renewed = Run(profile, Connection(env, 2), text);
+    check(renewed.text == std::optional<std::wstring>(kExactReply), "a new connection epoch translates again",
+          util::Narrow(renewed.error));
+    check(ReadRecords(env).size() == before + 2, "the new epoch misses the old cache entry");
+}
+
+void testRedirectRefused(const MockEnv& env) {
+    printf("[redirects]\n");
+    const Outcome outcome = Run(Profile(TranslationBackend::OpenAI, "mock-redirect", false), Connection(env),
+                                L"The cat is in the house and it is that (redirect)");
+    check(!outcome.text && outcome.error.find(L"307") != std::wstring::npos,
+          "a provider redirect is reported, not followed", util::Narrow(outcome.error));
+    bool followed = false;
+    for (const Recorded& request : ReadRecords(env))
+        followed = followed || request.path.rfind("/redirected", 0) == 0;
+    check(!followed, "the redirect target is never requested");
+}
+
+void testRemoteHttpRefused(const MockEnv& env) {
+    printf("[remote HTTP refusal]\n");
+    execution::ConnectionSnapshot connection = Connection(env);
+    connection.openAIBaseURL = "http://192.0.2.10/v1";
+    const size_t before = ReadRecords(env).size();
+    const Outcome outcome = Run(Profile(TranslationBackend::OpenAI, "mock-default", false), connection,
+                                L"The cat is in the house and it is that (insecure)");
+    const std::wstring expected =
+        execution::PrepareErrorMessage(execution::PrepareStatus::EndpointInsecure, TranslationBackend::OpenAI);
+    check(!outcome.text && !expected.empty() && outcome.error == expected,
+          "remote plain HTTP is refused with the fixed message", util::Narrow(outcome.error));
+    check(ReadRecords(env).size() == before, "a refused request never reaches any server");
+}
+
+void testLongUrl(const MockEnv& env) {
+    printf("[long URL]\n");
+    std::string base = "http://127.0.0.1:" + std::to_string(env.port) + "/long";
+    for (int i = 0; i < 200; ++i) base += "/segment-" + std::to_string(100 + i);
+    execution::ConnectionSnapshot connection = Connection(env);
+    connection.openAIBaseURL = base;
+    const Outcome outcome = Run(Profile(TranslationBackend::OpenAI, "mock-default", false), connection,
+                                L"The cat is in the house and it is that (long)");
+    check(base.size() > 2048, "the base path exceeds the old 2048-character buffer");
+    check(outcome.text == std::optional<std::wstring>(kDefaultReply), "a long provider URL is sent intact",
+          util::Narrow(outcome.error));
+    const std::vector<Recorded> records = ReadRecords(env);
+    check(!records.empty() && records.back().path == base.substr(base.find("/long")) + "/chat/completions",
+          "the full path reaches the server");
+}
+
+bool CommitBoundProfile(const MockEnv& env, Settings& settings) {
+    Settings candidate = settings;
+    candidate.openAIBaseURL = Base(env);
+    candidate.openAIKey = kKey;
+    TranslationProfile bound = Profile(TranslationBackend::OpenAI, "mock-exact", true);
+    bound.id = "runtime-bound";
+    candidate.profileConfig.profiles.push_back(bound);
+    candidate.profileConfig.bindings.shortcut1ProfileId = bound.id;
+    std::string error;
+    return check(settings.commit(candidate, &error), "commit a custom profile bound to shortcut 1", error);
+}
+
+void testCommittedBinding(const MockEnv& env) {
+    printf("[committed binding]\n");
+    Settings& settings = Settings::shared();
+    settings.load();
+    if (!CommitBoundProfile(env, settings)) return;
+    const execution::ContextPtr context = translator::FreezeEntry(ProfileEntry::Shortcut1, ShortcutAction::SmartPopup);
+    if (!check(context && context->profile.id == "runtime-bound", "shortcut 1 freezes its committed profile")) return;
+    check(context->connection.openAIBaseURL == Base(env) && context->connection.openAIKey == kKey &&
+              context->connection.connectionEpoch == settings.connectionEpoch(),
+          "the frozen connection is the committed one");
+    std::wstring error;
+    const std::optional<std::wstring> text =
+        translator::TranslateFully(context, L"The cat is in the house and it is that (bound)", &error);
+    check(text == std::optional<std::wstring>(kExactReply), "the bound custom profile runs end to end",
+          util::Narrow(error));
+    settings.openAIBaseURL = "http://192.0.2.10/v1";  // uncommitted draft only
+    const execution::ContextPtr later = translator::FreezeEntry(ProfileEntry::Shortcut1, ShortcutAction::SmartPopup);
+    check(later && later->connection.openAIBaseURL == Base(env), "uncommitted drafts never reach a frozen entry");
+    settings.openAIBaseURL = Base(env);
+}
+
+void testBindingCommit() {
+    printf("[tray binding commit]\n");
+    Settings& settings = Settings::shared();
+    const execution::ContextPtr inFlight =
+        translator::FreezeEntry(ProfileEntry::Shortcut2, ShortcutAction::SmartReplace);
+    if (!check(inFlight && inFlight->profile.id != "runtime-bound", "shortcut 2 starts on another profile")) return;
+    const std::string previous = inFlight->profile.id;
+    const std::string committedBase = settings.snapshot().openAIBaseURL;
+    settings.openAIBaseURL = "http://192.0.2.10/v1";  // an unrelated, unsaved (and insecure) draft
+    std::string error;
+    check(profilebinding::Commit(settings, ProfileEntry::Shortcut2, "runtime-bound", &error),
+          "binding shortcut 2 to another profile commits", error);
+    check(settings.snapshot().openAIBaseURL == committedBase,
+          "a binding change never commits unrelated unsaved edits");
+    check(settings.openAIBaseURL == "http://192.0.2.10/v1", "unrelated unsaved edits stay as drafts");
+    settings.openAIBaseURL = committedBase;
+    const execution::ContextPtr later = translator::FreezeEntry(ProfileEntry::Shortcut2, ShortcutAction::SmartReplace);
+    check(later && later->profile.id == "runtime-bound", "later triggers use the new binding");
+    check(inFlight->profile.id == previous, "a trigger frozen before the change keeps its profile");
+    Settings reloaded;
+    reloaded.load();
+    check(reloaded.snapshot().profileConfig.bindings.shortcut2ProfileId == "runtime-bound",
+          "the new binding is saved");
+    error.clear();
+    check(!profilebinding::Commit(settings, ProfileEntry::Selection, "missing-profile", &error) && !error.empty(),
+          "a binding to an unknown profile is refused with an error");
+    check(settings.snapshot().profileConfig.bindings.selectionProfileId != "missing-profile",
+          "a refused binding changes nothing");
+}
+
+void testEditorConflict() {
+    printf("[editor save conflict]\n");
+    Settings& settings = Settings::shared();
+    const ProfileConfiguration staleBaseline = settings.committedData().profileConfig;
+    std::string error;
+    // The tray changes a binding while an open editor still holds the older configuration.
+    if (!check(profilebinding::Commit(settings, ProfileEntry::Selection, "runtime-bound", &error),
+               "another binding change commits first", error)) return;
+    ProfileConfiguration draft = staleBaseline;
+    draft.profiles.front().name = "Edited from a stale editor";
+    error.clear();
+    check(!profilebinding::CommitConfiguration(settings, draft, &error, &staleBaseline) && !error.empty(),
+          "an editor save on a stale baseline is refused with an explanation");
+    Settings reloaded;
+    reloaded.load();
+    check(reloaded.snapshot().profileConfig == settings.committedData().profileConfig &&
+              reloaded.snapshot().profileConfig.bindings.selectionProfileId == "runtime-bound",
+          "the newer configuration on disk is kept");
+    const ProfileConfiguration current = settings.committedData().profileConfig;
+    error.clear();
+    check(profilebinding::CommitConfiguration(settings, current, &error, &current),
+          "a save on the current baseline commits", error);
+}
+
+// Records after `from` whose body names `model`.
+size_t CountModelRequests(const MockEnv& env, size_t from, const std::string& model) {
+    const std::vector<Recorded> records = ReadRecords(env);
+    size_t count = 0;
+    for (size_t i = from; i < records.size(); ++i) {
+        bool ok = false;
+        const json::Value body = json::Parse(records[i].body, &ok);
+        if (ok && body["model"].isString() && body["model"].asString() == model) ++count;
+    }
+    return count;
+}
+
+void testMissingModel(const MockEnv& env) {
+    printf("[missing Ollama model]\n");
+    Settings& settings = Settings::shared();
+    Settings candidate = settings;
+    candidate.ollamaHost = "http://127.0.0.1";
+    candidate.ollamaPort = env.port;
+    // The legacy fields the old start-up auto-correction keyed on.
+    candidate.backend = TranslationBackend::Ollama;
+    candidate.ollamaModel = "missing-model:1b";
+    TranslationProfile missing = Profile(TranslationBackend::Ollama, "missing-model:1b", false);
+    missing.id = "runtime-missing";
+    TranslationProfile installed = Profile(TranslationBackend::Ollama, "mock-default", false);
+    installed.id = "runtime-installed";
+    candidate.profileConfig.profiles.push_back(missing);
+    candidate.profileConfig.profiles.push_back(installed);
+    candidate.profileConfig.bindings.shortcut1ProfileId = missing.id;
+    candidate.profileConfig.bindings.shortcut2ProfileId = installed.id;
+    std::string error;
+    if (!check(settings.commit(candidate, &error), "bind a missing and an installed Ollama model", error)) return;
+
+    std::wstring listError;
+    const std::vector<std::wstring> models = ollamamodels::ListInstalled("http://127.0.0.1", env.port, &listError);
+    if (!check(models == std::vector<std::wstring>{L"mock-default:latest", L"mock-exact:latest"},
+               "the mock lists its installed models", util::Narrow(listError))) return;
+    const SettingsData before = settings.committedData();
+    const size_t from = ReadRecords(env).size();
+    ollamamodels::OnDiscovered(models);
+    check(settings.committedData() == before && settings.ollamaModel == "missing-model:1b",
+          "a missing model is never replaced by an installed one");
+    Settings reloaded;
+    reloaded.load();
+    check(reloaded.snapshot().profileConfig == before.profileConfig && reloaded.ollamaModel == "missing-model:1b",
+          "discovery saves nothing");
+    const std::vector<std::wstring> known = models;
+    const std::vector<profilestatus::EntryStatus> statuses =
+        profilestatus::Describe(before.profileConfig, translator::ConnectionFrom(settings.snapshot()), &known);
+    check(statuses.size() == 3 && statuses[0].model == profilestatus::ModelState::Missing &&
+              statuses[0].profile.model == "missing-model:1b",
+          "the Settings summary reports the configured model as missing");
+    // Preload runs on a worker: wait (bounded) for the installed model's warm-up request.
+    bool warmed = false;
+    for (int i = 0; i < 50 && !warmed; ++i) {
+        warmed = CountModelRequests(env, from, "mock-default") > 0;
+        if (!warmed) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    check(warmed, "the installed bound model is preloaded");
+    check(CountModelRequests(env, from, "missing-model:1b") == 0, "the missing model is never preloaded");
+}
+
+translator::HealthCheckResult RunConnectionCheck(const profilestatus::Probe& probe,
+                                                 const execution::ConnectionSnapshot& connection) {
+    auto done = std::make_shared<std::promise<translator::HealthCheckResult>>();
+    std::future<translator::HealthCheckResult> result = done->get_future();
+    translator::CheckConnectionAsync(probe, connection, [done](translator::HealthCheckResult value) {
+        done->set_value(std::move(value));
+    });
+    if (result.wait_for(std::chrono::seconds(15)) != std::future_status::ready) {
+        translator::HealthCheckResult timedOut;
+        timedOut.message = L"timed out";
+        return timedOut;
+    }
+    return result.get();
+}
+
+void testConnectionCheck(const MockEnv& env) {
+    printf("[connection test of an explicit model]\n");
+    const std::wstring sentinel = L"CLIPBOARD_SENTINEL_NOT_FOR_TESTS";
+    const bool clipboardSet = clipboard::SetText(sentinel);
+    const size_t from = ReadRecords(env).size();
+    const translator::HealthCheckResult ollama =
+        RunConnectionCheck({TranslationBackend::Ollama, "mock-default"}, Connection(env, 31));
+    check(ollama.ok, "an installed Ollama model passes", util::Narrow(ollama.message));
+    check(CountModelRequests(env, from, "mock-default") == 1, "the test sends exactly that Ollama model");
+    const translator::HealthCheckResult again =
+        RunConnectionCheck({TranslationBackend::Ollama, "mock-default"}, Connection(env, 31));
+    check(again.ok && CountModelRequests(env, from, "mock-default") == 2, "a repeated test is never a cache hit");
+    const translator::HealthCheckResult cloud =
+        RunConnectionCheck({TranslationBackend::OpenAI, "mock-exact"}, Connection(env, 31));
+    check(cloud.ok, "a cloud model passes", util::Narrow(cloud.message));
+    const std::vector<Recorded> records = ReadRecords(env);
+    check(records.size() == from + 3 && records.back().path == "/v1/chat/completions" && records.back().auth,
+          "the cloud test reaches the configured endpoint with the key");
+    const translator::HealthCheckResult redirect =
+        RunConnectionCheck({TranslationBackend::OpenAI, "mock-redirect"}, Connection(env, 31));
+    check(!redirect.ok && redirect.message.find(L"307") != std::wstring::npos,
+          "a failing model is reported, not swapped for another", util::Narrow(redirect.message));
+    const std::vector<Recorded> sent = ReadRecords(env);
+    bool synthetic = sent.size() > from;
+    for (size_t i = from; i < sent.size(); ++i) {
+        const std::string& body = sent[i].body;
+        synthetic = synthetic && body.find("TypeTide connection test") != std::string::npos &&
+                    body.find(util::Narrow(sentinel)) == std::string::npos;
+    }
+    check(clipboardSet && synthetic, "tests send only fixed synthetic text, never the clipboard");
+}
+
+void testLegacyKeyMigration() {
+    printf("[legacy plaintext key migration]\n");
+    const std::wstring parent = EnvValue(L"TYPETIDE_DATA_DIR");
+    const std::wstring dir = parent + L"\\legacy-migration";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    SetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", dir.c_str());
+    const std::string legacyKey = "synthetic-legacy-plaintext-key";
+    {
+        std::ofstream out(dir + L"\\settings.json", std::ios::binary | std::ios::trunc);
+        out << "{\"backend\":\"openai\",\"openAIBaseURL\":\"https://api.example.test/v1\","
+               "\"openAIModel\":\"synthetic-model\",\"openAIKey\":\"" << legacyKey << "\"}";
+    }
+    auto fileText = [&dir] {
+        std::ifstream in(dir + L"\\settings.json", std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    Settings legacy;
+    legacy.load();
+    check(!legacy.isReadOnly() && legacy.hasLegacyPlaintextKey() && legacy.snapshot().openAIKey == legacyKey,
+          "a legacy file with a plaintext key loads and is flagged for migration");
+    std::string error;
+    check(legacy.migrateLegacyPlaintextKey(&error), "the start-up migration commits", error);
+    const std::string migrated = fileText();
+    check(migrated.find(legacyKey) == std::string::npos && migrated.find("schemaVersion") != std::string::npos,
+          "settings.json is rewritten without the key");
+    check(!legacy.hasLegacyPlaintextKey() && legacy.migrateLegacyPlaintextKey(&error),
+          "a second migration has nothing to do");
+    Settings reloaded;
+    reloaded.load();
+    check(!reloaded.hasLegacyPlaintextKey() && reloaded.snapshot().openAIKey == legacyKey,
+          "the key is read back from the credential store");
+    SetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", parent.c_str());
+}
+
+void testReplaceGuards() {
+    printf("[replacement guards]\n");
+    const std::wstring original = L"CLIPBOARD_BEFORE_REPLACE";
+    if (!check(clipboard::SetText(original), "the clipboard is writable in this session")) return;
+    session::Ledger ledger;
+    const session::PasteGuard stale = ledger.pasteGuard(ledger.beginSession().session, 0);
+    const uint64_t current = ledger.beginSession().session;
+    check(replacer::ReplaceForTesting(L"STALE_TEXT", false, stale) == replacer::ReplaceOutcome::AbortedStale,
+          "a superseded replacement is aborted before any input");
+    check(clipboard::GetText() == std::optional<std::wstring>(original), "the clipboard is unchanged after a stale abort");
+    // Any window other than the foreground one stands in for "the captured editor lost focus".
+    const std::uintptr_t foreground = reinterpret_cast<std::uintptr_t>(GetForegroundWindow());
+    const session::PasteGuard elsewhere = ledger.pasteGuard(current, foreground + 4);
+    check(replacer::ReplaceForTesting(L"ELSEWHERE_TEXT", true, elsewhere) ==
+              replacer::ReplaceOutcome::AbortedTargetChanged,
+          "a replacement whose window is no longer in front is aborted");
+    check(clipboard::GetText() == std::optional<std::wstring>(original),
+          "the clipboard is restored after a target abort");
+}
+
+void testEpochBackfill(const MockEnv& env) {
+    printf("[credential change during a request]\n");
+    const TranslationProfile profile = Profile(TranslationBackend::OpenAI, "mock-slow", true);
+    const std::wstring text = L"The cat is in the house and it is that (backfill)";
+    const size_t before = ReadRecords(env).size();
+    auto firstDone = std::make_shared<std::promise<bool>>();
+    std::future<bool> first = firstDone->get_future();
+    translator::Stream(execution::Freeze(profile, ShortcutAction::SmartPopup, Connection(env, 21)), text,
+                       std::nullopt, [](uint64_t, const std::wstring&) {},
+                       [firstDone](uint64_t, bool ok, const std::wstring&) { firstDone->set_value(ok); });
+    // The credential/connection changes (new epoch) while the old request is still running.
+    const Outcome renewed = Run(profile, Connection(env, 22), text);
+    check(renewed.text == std::optional<std::wstring>(kExactReply), "a request after the change is answered",
+          util::Narrow(renewed.error));
+    check(first.wait_for(std::chrono::seconds(15)) == std::future_status::ready && first.get(),
+          "the request started before the change still completes");
+    check(ReadRecords(env).size() == before + 2, "the new epoch never reuses the older in-flight result");
+    const Outcome oldAgain = Run(profile, Connection(env, 21), text);
+    check(oldAgain.text == std::optional<std::wstring>(kExactReply) && ReadRecords(env).size() == before + 2,
+          "the late result was cached only under the old epoch");
+}
+
+} // namespace
+
+int RunRuntimeSelfTests() {
+    printf("TypeTide runtime self-test\n");
+    MockEnv env;
+    env.port = _wtoi(EnvValue(L"TYPETIDE_MOCK_PORT").c_str());
+    env.recordPath = EnvValue(L"TYPETIDE_MOCK_RECORD");
+    if (env.port <= 0 || env.recordPath.empty() || EnvValue(L"TYPETIDE_DATA_DIR").empty()) {
+        printf("TYPETIDE_MOCK_PORT, TYPETIDE_MOCK_RECORD and TYPETIDE_DATA_DIR are required\n");
+        return 2;
+    }
+    translator::ClearCacheForTesting();
+    const std::optional<std::wstring> userClipboard = clipboard::GetText();  // restored at the end
+    testPresetOpenAI(env);
+    testExactOutput(env);
+    testOllamaCustom(env);
+    testThinkRetry(env);
+    testCacheAndEpoch(env);
+    testRedirectRefused(env);
+    testRemoteHttpRefused(env);
+    testLongUrl(env);
+    testCommittedBinding(env);
+    testBindingCommit();
+    testEditorConflict();
+    testMissingModel(env);
+    testConnectionCheck(env);
+    testReplaceGuards();
+    testEpochBackfill(env);
+    testLegacyKeyMigration();
+    if (userClipboard) clipboard::SetText(*userClipboard);
+    printf(g_failures ? "\n%d FAILURE(S)\n" : "\nall runtime tests passed\n", g_failures);
+    return g_failures ? 1 : 0;
+}
