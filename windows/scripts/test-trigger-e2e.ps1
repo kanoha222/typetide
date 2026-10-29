@@ -37,6 +37,8 @@ public static class T {
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
     [DllImport("user32.dll")] public static extern IntPtr GetSubMenu(IntPtr menu, int position);
@@ -71,6 +73,20 @@ public static class T {
         return text.ToString();
     }
 
+    /// "class 'title'" of every visible top-level window of process `pid` (diagnostics).
+    public static string Describe(uint pid) {
+        StringBuilder all = new StringBuilder();
+        EnumProc callback = delegate (IntPtr hwnd, IntPtr unused) {
+            uint owner;
+            GetWindowThreadProcessId(hwnd, out owner);
+            if (owner == pid && IsWindowVisible(hwnd)) all.AppendFormat("{0} '{1}'; ", ClassOf(hwnd), Text(hwnd));
+            return true;
+        };
+        EnumWindows(callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return all.ToString();
+    }
+
     public static string MenuText(IntPtr menu, int position) {
         StringBuilder text = new StringBuilder(512);
         GetMenuStringW(menu, (uint)position, text, text.Capacity, 0x400);  // MF_BYPOSITION
@@ -84,7 +100,7 @@ $VK_MENU = 0x12; $VK_ESCAPE = 0x1B; $VK_DOWN = 0x28; $VK_RIGHT = 0x27; $VK_RETUR
 $WM_SETTEXT = 0x000C; $WM_KEYDOWN = 0x0100; $WM_LBUTTONDOWN = 0x0201; $WM_RBUTTONUP = 0x0205
 $EM_SETSEL = 0x00B1; $MN_GETHMENU = 0x01E1; $WM_APP_TRAY = 0x8000 + 1
 $MF_BYPOSITION = 0x400; $MF_CHECKED = 0x8; $MF_HILITE = 0x80
-$MOUSEEVENTF_LEFTUP = 0x0004
+$MOUSEEVENTF_LEFTDOWN = 0x0002; $MOUSEEVENTF_LEFTUP = 0x0004; $IDOK = 1
 
 # Synthetic selected text: a Chinese sentence, kept as code points so this file stays ASCII.
 $Source = -join ([char[]]@(0x4F60, 0x597D, 0x4E16, 0x754C, 0xFF0C, 0x4ECA, 0x5929, 0x5929, 0x6C14, 0x5F88, 0x597D, 0x3002))
@@ -383,9 +399,18 @@ function Test-ClearedShortcutAndSelection {
     Start-Sleep -Seconds 3
     Check ((-not (Find-Popup)) -and (Edit-Text) -eq $Source -and (Translations $from).Count -eq 0) `
         "a cleared shortcut triggers nothing"
+    Check (Prepare-Text) "selection: source text selected"
+    $rect = New-Object T+RECT
+    [T]::GetWindowRect($script:hostHwnd, [ref]$rect) | Out-Null
+    [T]::SetCursorPos($rect.Left + 120, $rect.Top + 12) | Out-Null  # the caption, not the text box
     $from = Record-Count
+    [T]::mouse_event($MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 60
     [T]::mouse_event($MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)  # "selection finished"
     $popup = Popup-Text
+    if (-not $popup) {
+        Write-Output "    diagnostics: foreground $([T]::GetForegroundWindow()) host $($script:hostHwnd); edit text '$(Visible-Text (Edit-Text))'"
+    }
     Check ($popup -eq $Default -and (Models $from) -eq 'mock-selection') `
         "the selection trigger runs the profile bound to Selection" "got '$(Visible-Text $popup)', models '$(Models $from)'"
     Close-Popup | Out-Null
@@ -425,6 +450,19 @@ function Test-TrayBinding {
     $sub = [T]::SendMessageInt($subWindow, $MN_GETHMENU, [IntPtr]::Zero, [IntPtr]::Zero)
     Check (Highlight $subWindow $sub 1) "the keyboard reaches 'E2E exact'" "highlighted $(Hilited $sub)"
     [T]::PostMessageW($subWindow, $WM_KEYDOWN, [IntPtr]$VK_RETURN, [IntPtr]::Zero) | Out-Null
+    $closed = Wait-For { @(Menu-Windows).Count -eq 0 } 3000
+    if (-not $closed) {
+        Write-Output "    diagnostics: Enter on the submenu left the menu open; trying the menu loop's own window"
+        [T]::PostMessageW($window, $WM_KEYDOWN, [IntPtr]$VK_RETURN, [IntPtr]::Zero) | Out-Null
+        $closed = Wait-For { @(Menu-Windows).Count -eq 0 } 3000
+    }
+    Write-Output "    diagnostics: menu closed: $([bool]$closed); app windows: $([T]::Describe([uint32]$script:app.Id))"
+    $dialog = Wait-For { @([T]::Windows([uint32]$script:app.Id, '#32770'))[0] } 1500
+    if ($dialog) {
+        $static = [T]::FindWindowExW($dialog, [IntPtr]::Zero, 'Static', $NUL)
+        Write-Output "    diagnostics: dialog '$([T]::Text($dialog))': '$(if ($static -ne [IntPtr]::Zero) { [T]::Text($static) })'"
+        [T]::PostMessageW($dialog, 0x0111, [IntPtr]$IDOK, [IntPtr]::Zero) | Out-Null  # WM_COMMAND IDOK
+    }
     $bound = Wait-For { (Read-Settings).shortcut1ProfileId -eq 'p-exact' } 5000
     Check ([bool]$bound) "choosing a profile in the tray binds shortcut 1" "shortcut1ProfileId '$((Read-Settings).shortcut1ProfileId)'"
     Check (Prepare-Text) "tray: source text selected"
