@@ -4,6 +4,7 @@
 #include "LaunchAtLogin.h"
 #include "LocalDiagnostics.h"
 #include "OllamaModels.h"
+#include "ProfileBinding.h"
 #include "ProfileStatus.h"
 #include "resource.h"
 #include "Settings.h"
@@ -19,6 +20,7 @@
 #include <uxtheme.h>
 #include <string>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -83,7 +85,6 @@ struct State {
     UINT dpi = 96;
     std::vector<std::vector<HWND>> pages;  // 每个 tab 页的控件
     bool loading = false;                  // 初始化填充时不触发保存
-    bool saveWarningShown = false;
     bool backendReady = false;
     bool shortcutsReady = false;
     bool dark = false;
@@ -204,10 +205,8 @@ void applyTheme(HWND hwnd) {
 
 void updateFirstRunCompletion() {
     Settings& s = Settings::shared();
-    if (!s.hasCompletedFirstLaunch && g.backendReady && g.shortcutsReady) {
-        s.hasCompletedFirstLaunch = true;
-        s.save();
-    }
+    if (!s.hasCompletedFirstLaunch && g.backendReady && g.shortcutsReady)
+        profilebinding::CommitChange(s, [](SettingsData& d) { d.hasCompletedFirstLaunch = true; }, nullptr);
     if (ctrl(kFirstRunHint)) {
         // A read-only store keeps defaults in memory and refuses every save: say so first.
         const std::wstring text = s.isReadOnly()
@@ -424,15 +423,14 @@ int cloudProviderIndex(const std::string& baseUrl) {
 }
 
 // Presets fill the endpoint only; each profile names its own model in the profile editor.
-void applyCloudProviderPreset(int index) {
-    Settings& s = Settings::shared();
+// "" for "Custom endpoint".
+std::string cloudProviderUrl(int index) {
     switch (index) {
-    case 0: s.openAIBaseURL = "https://api.openai.com/v1"; break;
-    case 1: s.openAIBaseURL = "https://openrouter.ai/api/v1"; break;
-    case 2: s.openAIBaseURL = "https://api.deepseek.com"; break;
-    default: return;
+    case 0: return "https://api.openai.com/v1";
+    case 1: return "https://openrouter.ai/api/v1";
+    case 2: return "https://api.deepseek.com";
+    default: return {};
     }
-    SetWindowTextW(ctrl(kOaiUrl), util::Widen(s.openAIBaseURL).c_str());
 }
 
 // ---------- profile summaries, model discovery and connection tests ----------
@@ -846,29 +844,81 @@ void layoutForClientSize(int width, int height) {
 
 // ---------- 变更处理 ----------
 
+/// Puts every control of the settings pages back to the committed values (after a refused save).
+void syncControls() {
+    const Settings& s = Settings::shared();
+    g.loading = true;
+    CheckDlgButton(g.hwnd, kEnable, s.enabled ? BST_CHECKED : BST_UNCHECKED);
+    SetWindowTextW(ctrl(kOaiUrl), util::Widen(s.openAIBaseURL).c_str());
+    SetWindowTextW(ctrl(kOaiKey), util::Widen(s.openAIKey).c_str());
+    SendMessageW(ctrl(kOaiProvider), CB_SETCURSEL, cloudProviderIndex(s.openAIBaseURL), 0);
+    SendMessageW(ctrl(kHkRead), HKM_SETHOTKEY, hotkeyToControl(s.readShortcut), 0);
+    SendMessageW(ctrl(kHkRewrite), HKM_SETHOTKEY, hotkeyToControl(s.rewriteShortcut), 0);
+    CheckDlgButton(g.hwnd, kReadWin, s.readShortcut.modifiers & MOD_WIN ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(g.hwnd, kRewriteWin, s.rewriteShortcut.modifiers & MOD_WIN ? BST_CHECKED : BST_UNCHECKED);
+    fillShortcutActionCombo(ctrl(kReadAction), s.readShortcutAction);
+    fillShortcutActionCombo(ctrl(kRewriteAction), s.rewriteShortcutAction);
+    SendMessageW(ctrl(kTrigger), CB_SETCURSEL, (int)s.selectionTrigger, 0);
+    CheckDlgButton(g.hwnd, kPreview, s.rewritePreview ? BST_CHECKED : BST_UNCHECKED);
+    SendMessageW(ctrl(kSkipList), LB_RESETCONTENT, 0, 0);
+    for (const auto& app : s.skipApps) SendMessageW(ctrl(kSkipList), LB_ADDSTRING, 0, (LPARAM)app.c_str());
+    updateShortcutControls();
+    g.loading = false;
+}
+
+/// A new cloud base URL. An API key belongs to one origin, so a key saved for another origin is
+/// cleared in the same commit (and must be entered again for the new endpoint).
+std::function<void(SettingsData&)> cloudUrlChange(const std::string& url, std::function<void()>* afterCommit) {
+    const SettingsData& committed = Settings::shared().committedData();
+    const bool clearKey = !committed.openAIKey.empty() &&
+                          !execution::SameOrigin(util::Widen(committed.openAIBaseURL), util::Widen(url));
+    *afterCommit = [url, clearKey] {
+        SendMessageW(ctrl(kOaiProvider), CB_SETCURSEL, cloudProviderIndex(url), 0);
+        if (!clearKey) return;
+        SetWindowTextW(ctrl(kOaiKey), L"");
+        SetWindowTextW(ctrl(kOaiHint), L"The API key was cleared because the endpoint changed. Enter the key for "
+                                       L"the new endpoint; it is stored in Windows Credential Manager.");
+    };
+    return [url, clearKey](SettingsData& d) {
+        d.openAIBaseURL = url;
+        if (clearKey) d.openAIKey.clear();
+    };
+}
+
+void warnDuplicateShortcut() {
+    MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.", L"TypeTide — duplicate shortcut",
+                MB_OK | MB_ICONWARNING);
+}
+
 void onCommand(int id, int code) {
     if (g.loading) return;
     Settings& s = Settings::shared();
-    bool save = true, reapply = false;
+    // Each case describes one change; it is committed on top of the committed values
+    // (profilebinding::CommitChange), so a refused save leaves the file, the live settings and,
+    // after syncControls(), the controls as they were.
+    const SettingsData& committed = s.committedData();
+    std::function<void(SettingsData&)> change;
+    std::function<void()> afterCommit;
+    bool reapply = false;
 
     switch (id) {
     case kTab:
         if (code == LBN_SELCHANGE)
             showPage((int)SendMessageW(ctrl(kTab), LB_GETCURSEL, 0, 0));
         return;
-    case kEnable:
-        s.enabled = IsDlgButtonChecked(g.hwnd, kEnable) == BST_CHECKED;
+    case kEnable: {
+        const bool enabled = IsDlgButtonChecked(g.hwnd, kEnable) == BST_CHECKED;
+        change = [enabled](SettingsData& d) { d.enabled = enabled; };
         reapply = true;
         break;
+    }
     case kLogin:
         launchatlogin::SetEnabled(IsDlgButtonChecked(g.hwnd, kLogin) == BST_CHECKED);
-        save = false;
         break;
     case kCheckUpdate:
         EnableWindow(ctrl(kCheckUpdate), FALSE);
         SetWindowTextW(ctrl(kCheckUpdate), L"Checking…");
         updatechecker::CheckNowInteractive(g.hwnd, kMsgUpdateResult);
-        save = false;
         break;
 
     case kBuiltInDownload:
@@ -891,156 +941,109 @@ void onCommand(int id, int code) {
                 send(ok ? 1.0 : 0.0, ok ? L"Model ready for offline translation" : error, true);
             }).detach();
         }
-        save = false;
         break;
     case kOllamaRefresh:
         fetchOllamaModelsAsync();
-        save = false;
         break;
-    case kOaiProvider:
+    case kOaiProvider: {
         if (code != CBN_SELCHANGE) return;
-        applyCloudProviderPreset((int)SendMessageW(ctrl(kOaiProvider), CB_GETCURSEL, 0, 0));
+        const std::string url = cloudProviderUrl((int)SendMessageW(ctrl(kOaiProvider), CB_GETCURSEL, 0, 0));
+        if (url.empty() || url == committed.openAIBaseURL) return;  // "Custom endpoint": edit the URL
+        SetWindowTextW(ctrl(kOaiUrl), util::Widen(url).c_str());
+        change = cloudUrlChange(url, &afterCommit);
         break;
+    }
     case kOaiUrl: {
         // Committed when the field is left, so a half-typed host is never used by a trigger.
         if (code != EN_KILLFOCUS) return;
         const std::string url = util::Narrow(util::Trim(editText(ctrl(kOaiUrl))));
-        if (url == s.openAIBaseURL) return;
-        s.openAIBaseURL = url;
-        SendMessageW(ctrl(kOaiProvider), CB_SETCURSEL, cloudProviderIndex(url), 0);
+        if (url == committed.openAIBaseURL) return;
+        change = cloudUrlChange(url, &afterCommit);
         break;
     }
     case kOaiKey: {
         if (code != EN_KILLFOCUS) return;
         const std::string key = util::Narrow(util::Trim(editText(ctrl(kOaiKey))));
-        if (key == s.openAIKey) return;
-        s.openAIKey = key;
+        if (key == committed.openAIKey) return;
+        change = [key](SettingsData& d) { d.openAIKey = key; };
         break;
     }
     case kTestBound:
         testBoundModels();
-        save = false;
         break;
     case kManageProfiles:
     case kLanguageManage:
         openProfileManager();
-        save = false;
         break;
 
     case kHkRead:
+    case kHkRewrite: {
         if (code != EN_CHANGE) return;
-        {
-            Hotkey hk = hotkeyFromControl((WORD)SendMessageW(ctrl(kHkRead), HKM_GETHOTKEY, 0, 0));
-            if (hk.vk == 0) {
-                s.readShortcut = {0, 0};
-                CheckDlgButton(g.hwnd, kReadWin, BST_UNCHECKED);
-                updateShortcutControls();
-                reapply = true;
-                break;
-            }
-            if (IsDlgButtonChecked(g.hwnd, kReadWin) == BST_CHECKED) hk.modifiers |= MOD_WIN;
-            if (s.rewriteShortcut.isConfigured() && hk == s.rewriteShortcut) {
-                MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
-                            L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
-                SendMessageW(ctrl(kHkRead), HKM_SETHOTKEY, hotkeyToControl(s.readShortcut), 0);
-                return;
-            }
-            s.readShortcut = hk;
-            updateShortcutControls();
-            reapply = true;
+        const bool first = id == kHkRead;
+        Hotkey hk = hotkeyFromControl((WORD)SendMessageW(ctrl(id), HKM_GETHOTKEY, 0, 0));
+        if (hk.vk == 0) {
+            hk = {0, 0};
+            CheckDlgButton(g.hwnd, first ? kReadWin : kRewriteWin, BST_UNCHECKED);
+        } else if (IsDlgButtonChecked(g.hwnd, first ? kReadWin : kRewriteWin) == BST_CHECKED) {
+            hk.modifiers |= MOD_WIN;
         }
-        break;
-    case kHkRewrite:
-        if (code != EN_CHANGE) return;
-        {
-            Hotkey hk = hotkeyFromControl((WORD)SendMessageW(ctrl(kHkRewrite), HKM_GETHOTKEY, 0, 0));
-            if (hk.vk == 0) {
-                s.rewriteShortcut = {0, 0};
-                CheckDlgButton(g.hwnd, kRewriteWin, BST_UNCHECKED);
-                updateShortcutControls();
-                reapply = true;
-                break;
-            }
-            if (IsDlgButtonChecked(g.hwnd, kRewriteWin) == BST_CHECKED) hk.modifiers |= MOD_WIN;
-            if (s.readShortcut.isConfigured() && hk == s.readShortcut) {
-                MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
-                            L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
-                SendMessageW(ctrl(kHkRewrite), HKM_SETHOTKEY, hotkeyToControl(s.rewriteShortcut), 0);
-                return;
-            }
-            s.rewriteShortcut = hk;
-            updateShortcutControls();
-            reapply = true;
+        const Hotkey& other = first ? committed.rewriteShortcut : committed.readShortcut;
+        if (hk.isConfigured() && other.isConfigured() && hk == other) {
+            warnDuplicateShortcut();
+            syncControls();
+            return;
         }
+        change = [hk, first](SettingsData& d) { (first ? d.readShortcut : d.rewriteShortcut) = hk; };
+        reapply = true;
         break;
+    }
     case kReadWin:
-        if (!s.readShortcut.isConfigured()) {
-            CheckDlgButton(g.hwnd, kReadWin, BST_UNCHECKED);
+    case kRewriteWin: {
+        const bool first = id == kReadWin;
+        Hotkey hk = first ? committed.readShortcut : committed.rewriteShortcut;
+        if (!hk.isConfigured()) {
+            CheckDlgButton(g.hwnd, id, BST_UNCHECKED);
             return;
         }
-        if (IsDlgButtonChecked(g.hwnd, kReadWin) == BST_CHECKED) s.readShortcut.modifiers |= MOD_WIN;
-        else s.readShortcut.modifiers &= ~MOD_WIN;
-        if (s.rewriteShortcut.isConfigured() && s.readShortcut == s.rewriteShortcut) {
-            MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
-                        L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
-            s.readShortcut.modifiers ^= MOD_WIN;
-            CheckDlgButton(g.hwnd, kReadWin,
-                           s.readShortcut.modifiers & MOD_WIN ? BST_CHECKED : BST_UNCHECKED);
+        if (IsDlgButtonChecked(g.hwnd, id) == BST_CHECKED) hk.modifiers |= MOD_WIN;
+        else hk.modifiers &= ~MOD_WIN;
+        const Hotkey& other = first ? committed.rewriteShortcut : committed.readShortcut;
+        if (other.isConfigured() && hk == other) {
+            warnDuplicateShortcut();
+            syncControls();
             return;
         }
+        change = [hk, first](SettingsData& d) { (first ? d.readShortcut : d.rewriteShortcut) = hk; };
         reapply = true;
         break;
-    case kRewriteWin:
-        if (!s.rewriteShortcut.isConfigured()) {
-            CheckDlgButton(g.hwnd, kRewriteWin, BST_UNCHECKED);
-            return;
-        }
-        if (IsDlgButtonChecked(g.hwnd, kRewriteWin) == BST_CHECKED) s.rewriteShortcut.modifiers |= MOD_WIN;
-        else s.rewriteShortcut.modifiers &= ~MOD_WIN;
-        if (s.readShortcut.isConfigured() && s.readShortcut == s.rewriteShortcut) {
-            MessageBoxW(g.hwnd, L"Shortcut 1 and Shortcut 2 must be different.",
-                        L"TypeTide — duplicate shortcut", MB_OK | MB_ICONWARNING);
-            s.rewriteShortcut.modifiers ^= MOD_WIN;
-            CheckDlgButton(g.hwnd, kRewriteWin,
-                           s.rewriteShortcut.modifiers & MOD_WIN ? BST_CHECKED : BST_UNCHECKED);
-            return;
-        }
-        reapply = true;
-        break;
+    }
     case kHkReadClear:
-        s.readShortcut = {0, 0};
-        SendMessageW(ctrl(kHkRead), HKM_SETHOTKEY, 0, 0);
-        CheckDlgButton(g.hwnd, kReadWin, BST_UNCHECKED);
-        updateShortcutControls();
+    case kHkRewriteClear: {
+        const bool first = id == kHkReadClear;
+        SendMessageW(ctrl(first ? kHkRead : kHkRewrite), HKM_SETHOTKEY, 0, 0);
+        CheckDlgButton(g.hwnd, first ? kReadWin : kRewriteWin, BST_UNCHECKED);
+        change = [first](SettingsData& d) { (first ? d.readShortcut : d.rewriteShortcut) = {0, 0}; };
         reapply = true;
         break;
-    case kHkRewriteClear:
-        s.rewriteShortcut = {0, 0};
-        SendMessageW(ctrl(kHkRewrite), HKM_SETHOTKEY, 0, 0);
-        CheckDlgButton(g.hwnd, kRewriteWin, BST_UNCHECKED);
-        updateShortcutControls();
-        reapply = true;
-        break;
+    }
     case kReadAction:
+    case kRewriteAction: {
         if (code != CBN_SELCHANGE) return;
-        s.readShortcutAction = (ShortcutAction)SendMessageW(ctrl(kReadAction), CB_GETCURSEL, 0, 0);
+        const auto action = (ShortcutAction)SendMessageW(ctrl(id), CB_GETCURSEL, 0, 0);
+        const bool first = id == kReadAction;
+        change = [action, first](SettingsData& d) {
+            (first ? d.readShortcutAction : d.rewriteShortcutAction) = action;
+        };
         break;
-    case kRewriteAction:
-        if (code != CBN_SELCHANGE) return;
-        s.rewriteShortcutAction = (ShortcutAction)SendMessageW(ctrl(kRewriteAction), CB_GETCURSEL, 0, 0);
-        break;
+    }
     case kHkRestoreDefaults:
-        s.readShortcut = {MOD_ALT, 'D'};
-        s.rewriteShortcut = {MOD_ALT, 'R'};
-        s.readShortcutAction = ShortcutAction::SmartPopup;
-        s.rewriteShortcutAction = ShortcutAction::SmartReplace;
-        SendMessageW(ctrl(kHkRead), HKM_SETHOTKEY, hotkeyToControl(s.readShortcut), 0);
-        SendMessageW(ctrl(kHkRewrite), HKM_SETHOTKEY, hotkeyToControl(s.rewriteShortcut), 0);
-        CheckDlgButton(g.hwnd, kReadWin, BST_UNCHECKED);
-        CheckDlgButton(g.hwnd, kRewriteWin, BST_UNCHECKED);
-        fillShortcutActionCombo(ctrl(kReadAction), s.readShortcutAction);
-        fillShortcutActionCombo(ctrl(kRewriteAction), s.rewriteShortcutAction);
-        updateShortcutControls();
+        change = [](SettingsData& d) {
+            d.readShortcut = {MOD_ALT, 'D'};
+            d.rewriteShortcut = {MOD_ALT, 'R'};
+            d.readShortcutAction = ShortcutAction::SmartPopup;
+            d.rewriteShortcutAction = ShortcutAction::SmartReplace;
+        };
+        afterCommit = [] { syncControls(); };
         reapply = true;
         break;
     case kHkVerify:
@@ -1054,42 +1057,47 @@ void onCommand(int id, int code) {
                                         : L"One or more shortcuts are unavailable. Choose a different combination."),
                     L"TypeTide — shortcut verification",
                     MB_OK | (g.shortcutsReady ? MB_ICONINFORMATION : MB_ICONWARNING));
-        save = false;
         break;
 
-    case kTrigger:
+    case kTrigger: {
         if (code != CBN_SELCHANGE) return;
-        s.selectionTrigger = (SelectionTrigger)SendMessageW(ctrl(kTrigger), CB_GETCURSEL, 0, 0);
+        const auto trigger = (SelectionTrigger)SendMessageW(ctrl(kTrigger), CB_GETCURSEL, 0, 0);
+        change = [trigger](SettingsData& d) { d.selectionTrigger = trigger; };
         reapply = true;
         break;
-    case kPreview:
-        s.rewritePreview = IsDlgButtonChecked(g.hwnd, kPreview) == BST_CHECKED;
+    }
+    case kPreview: {
+        const bool preview = IsDlgButtonChecked(g.hwnd, kPreview) == BST_CHECKED;
+        change = [preview](SettingsData& d) { d.rewritePreview = preview; };
         break;
+    }
     case kSkipAdd: {
-        std::wstring app = util::Trim(editText(ctrl(kSkipEdit)));
-        if (app.empty()) { save = false; break; }
-        // The settings file allows 100 entries of up to 260 characters; more would fail every save.
-        if (s.skipApps.size() >= 100 || app.size() > 260) {
-            MessageBoxW(g.hwnd, s.skipApps.size() >= 100
+        const std::wstring app = util::Trim(editText(ctrl(kSkipEdit)));
+        if (app.empty()) return;
+        // The settings file allows 100 entries of up to 260 characters; more would be refused.
+        if (committed.skipApps.size() >= 100 || app.size() > 260) {
+            MessageBoxW(g.hwnd, committed.skipApps.size() >= 100
                                     ? L"TypeTide can exclude up to 100 apps. Remove one first."
                                     : L"That name is too long. Enter the program's file name, such as notepad.exe.",
                         L"TypeTide — excluded apps", MB_OK | MB_ICONWARNING);
-            save = false;
-            break;
+            return;
         }
-        for (auto& e : s.skipApps)
-            if (util::ToLower(e) == util::ToLower(app)) { save = false; break; }
-        if (!save) break;
-        s.skipApps.push_back(app);
-        SendMessageW(ctrl(kSkipList), LB_ADDSTRING, 0, (LPARAM)app.c_str());
-        SetWindowTextW(ctrl(kSkipEdit), L"");
+        for (const auto& existing : committed.skipApps)
+            if (util::ToLower(existing) == util::ToLower(app)) return;
+        change = [app](SettingsData& d) { d.skipApps.push_back(app); };
+        afterCommit = [app] {
+            SendMessageW(ctrl(kSkipList), LB_ADDSTRING, 0, (LPARAM)app.c_str());
+            SetWindowTextW(ctrl(kSkipEdit), L"");
+        };
         break;
     }
     case kSkipRemove: {
-        int sel = (int)SendMessageW(ctrl(kSkipList), LB_GETCURSEL, 0, 0);
-        if (sel < 0 || sel >= (int)s.skipApps.size()) { save = false; break; }
-        s.skipApps.erase(s.skipApps.begin() + sel);
-        SendMessageW(ctrl(kSkipList), LB_DELETESTRING, sel, 0);
+        const int sel = (int)SendMessageW(ctrl(kSkipList), LB_GETCURSEL, 0, 0);
+        if (sel < 0 || sel >= (int)committed.skipApps.size()) return;
+        change = [sel](SettingsData& d) {
+            if (sel < (int)d.skipApps.size()) d.skipApps.erase(d.skipApps.begin() + sel);
+        };
+        afterCommit = [sel] { SendMessageW(ctrl(kSkipList), LB_DELETESTRING, sel, 0); };
         break;
     }
     case kDiagExport: {
@@ -1106,32 +1114,32 @@ void onCommand(int id, int code) {
                 MessageBoxW(g.hwnd, L"No diagnostics have been recorded yet.",
                             L"TypeTide — export", MB_OK | MB_ICONINFORMATION);
         }
-        save = false;
         break;
     }
     case kDiagClear:
         diagnostics::Clear();
         MessageBoxW(g.hwnd, L"Local diagnostics were cleared.", L"TypeTide — diagnostics",
                     MB_OK | MB_ICONINFORMATION);
-        save = false;
         break;
 
     default:
         return;
     }
 
-    if (save) {
-        if (s.save()) {
-            g.saveWarningShown = false;
-        } else if (!g.saveWarningShown) {
-            g.saveWarningShown = true;
-            MessageBoxW(g.hwnd,
-                        L"TypeTide couldn't save your settings. Your existing settings file was "
-                        L"left unchanged.\n\nCheck that the settings folder is writable, then try again.",
-                        L"TypeTide — settings not saved", MB_OK | MB_ICONWARNING);
+    if (change) {
+        std::string error;
+        if (profilebinding::CommitChange(s, change, &error)) {
+            if (afterCommit) afterCommit();
+            if (reapply) applyToApp();
+        } else {
+            syncControls();
+            const std::wstring message = L"TypeTide couldn't save this change, so it was undone.\n\n" +
+                                         util::Widen(error) +
+                                         L"\n\nYour settings file and current settings are unchanged.";
+            MessageBoxW(g.hwnd, message.c_str(), L"TypeTide — settings not saved", MB_OK | MB_ICONWARNING);
         }
+        updateShortcutControls();
     }
-    if (reapply) applyToApp();
     syncCommitted();  // a saved connection change drops stale model lists and test results
 }
 
@@ -1279,6 +1287,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g.fontBold) { DeleteObject(g.fontBold); g.fontBold = nullptr; }
         if (g.fontTitle) { DeleteObject(g.fontTitle); g.fontTitle = nullptr; }
         if (g.tabImages) { ImageList_Destroy(g.tabImages); g.tabImages = nullptr; }
+        {
+            // Results already posted but not yet handled would leak with the window: free them.
+            MSG queued;
+            while (PeekMessageW(&queued, hwnd, kMsgOllamaModels, kMsgBuiltInProgress, PM_REMOVE)) {
+                if (queued.message == kMsgOllamaModels) delete reinterpret_cast<ollamamodels::Discovery*>(queued.lParam);
+                else if (queued.message == kMsgBackendHealth) delete reinterpret_cast<ConnectionResult*>(queued.lParam);
+                else if (queued.message == kMsgBuiltInProgress) delete reinterpret_cast<BuiltInProgress*>(queued.lParam);
+            }
+        }
         g.hwnd = nullptr;
         g.pages.clear();
         // Results still in flight are posted to a dead window and freed by their senders.

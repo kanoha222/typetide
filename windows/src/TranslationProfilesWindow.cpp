@@ -392,7 +392,7 @@ void pullEdits() {
         invalidateTest();
         if (g.promptDisplayLossy) g.rejectedInputs[g.editor->current().id] |= inputBit(kPrompt);
         else if (lossless(prompt)) {
-            g.editor->setSystemPrompt(util::Narrow(prompt));
+            g.editor->setSystemPrompt(profileeditor::PromptFromEdit(util::Narrow(prompt), g.editor->current().systemPrompt));
             g.shownPrompt = prompt;
         }
     }

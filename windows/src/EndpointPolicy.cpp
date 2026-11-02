@@ -144,8 +144,22 @@ EndpointInfo ClassifyEndpoint(const std::wstring& url) {
     return info;
 }
 
-bool SameOrigin(const std::wstring&, const std::wstring&) {
-    return false;  // RED scaffold
+bool SameOrigin(const std::wstring& a, const std::wstring& b) {
+    const EndpointInfo left = ClassifyEndpoint(a);
+    const EndpointInfo right = ClassifyEndpoint(b);
+    auto usable = [](const EndpointInfo& info) {
+        return info.kind == EndpointKind::LoopbackHttp || info.kind == EndpointKind::Https ||
+               info.kind == EndpointKind::RemoteHttp;
+    };
+    if (!usable(left) || !usable(right)) return false;
+    if ((left.kind == EndpointKind::Https) != (right.kind == EndpointKind::Https) || left.port != right.port ||
+        left.host.size() != right.host.size())
+        return false;
+    for (std::size_t i = 0; i < left.host.size(); ++i) {  // authorities are ASCII (classifier rule)
+        auto lower = [](wchar_t c) { return c >= L'A' && c <= L'Z' ? static_cast<wchar_t>(c - L'A' + L'a') : c; };
+        if (lower(left.host[i]) != lower(right.host[i])) return false;
+    }
+    return true;
 }
 
 } // namespace execution

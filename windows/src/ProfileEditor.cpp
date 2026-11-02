@@ -4,8 +4,14 @@
 
 namespace profileeditor {
 
-std::string PromptFromEdit(const std::string& edited, const std::string&) {
-    return edited;  // RED scaffold
+std::string PromptFromEdit(const std::string& edited, const std::string& original) {
+    const bool lfOnly = original.find('\n') != std::string::npos && original.find('\r') == std::string::npos;
+    if (!lfOnly) return edited;
+    std::string text;
+    text.reserve(edited.size());
+    for (std::size_t i = 0; i < edited.size(); ++i)
+        if (!(edited[i] == '\r' && i + 1 < edited.size() && edited[i + 1] == '\n')) text += edited[i];
+    return text;
 }
 
 } // namespace profileeditor

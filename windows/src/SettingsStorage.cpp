@@ -1,5 +1,6 @@
 #include "SettingsStorage.h"
 #include "SettingsDiagnostics.h"
+#include "TranslationProfile.h"
 #include "Util.h"
 #include <utility>
 
@@ -101,7 +102,14 @@ bool Replace(const std::wstring& path, const std::string& bytes, std::string& er
         error = "Complete settings exceed the 1 MiB byte limit";
         return false;
     }
-    const auto temporaryPath = path + L".tmp";
+    // A unique name per save: an unknown leftover (e.g. from a crash) is never touched and never
+    // blocks later saves; CREATE_NEW still refuses to reuse any existing file.
+    const std::string unique = profiles::NewId();
+    if (unique.empty()) {
+        error = "Cannot name a settings temporary file";
+        return false;
+    }
+    const auto temporaryPath = path + L"." + std::wstring(unique.begin(), unique.end()) + L".tmp";
     TemporaryFile temporary(temporaryPath);
     FileHandle file(CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr,
                                 CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));

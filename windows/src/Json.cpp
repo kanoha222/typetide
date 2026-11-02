@@ -286,7 +286,47 @@ Value Parse(const std::string& text, bool* okOut) {
 }
 
 std::string LossyUtf8(const std::string& text) {
-    return text;  // RED scaffold
+    static const char kReplacement[] = "\xEF\xBF\xBD";  // U+FFFD
+    std::string out;
+    out.reserve(text.size());
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        if (lead < 0x80) {
+            out += text[i++];
+            continue;
+        }
+        std::size_t length = 0;
+        unsigned cp = 0;
+        unsigned minimum = 0;
+        if (lead >= 0xC2 && lead <= 0xDF) { length = 2; cp = lead & 0x1F; minimum = 0x80; }
+        else if (lead >= 0xE0 && lead <= 0xEF) { length = 3; cp = lead & 0x0F; minimum = 0x800; }
+        else if (lead >= 0xF0 && lead <= 0xF4) { length = 4; cp = lead & 0x07; minimum = 0x10000; }
+        if (length == 0) {  // not a lead byte
+            out += kReplacement;
+            ++i;
+            continue;
+        }
+        std::size_t continuation = 0;
+        while (continuation + 1 < length && i + continuation + 1 < text.size() &&
+               (static_cast<unsigned char>(text[i + continuation + 1]) & 0xC0) == 0x80) {
+            cp = (cp << 6) | (static_cast<unsigned char>(text[i + continuation + 1]) & 0x3F);
+            ++continuation;
+        }
+        if (continuation + 1 < length) {  // truncated: one replacement for the valid prefix
+            out += kReplacement;
+            i += 1 + continuation;
+            continue;
+        }
+        if (cp < minimum || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {  // overlong/surrogate/range
+            out += kReplacement;
+            ++i;
+            continue;
+        }
+        out.append(text, i, length);
+        i += length;
+    }
+    return out;
 }
 
 std::string Escape(const std::string& s) {

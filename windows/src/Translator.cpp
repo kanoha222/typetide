@@ -167,7 +167,7 @@ StreamOutcome runOllama(const Job& job, uint64_t id, const DeltaFn& onDelta, con
     LineAssembler lines;
     auto onLine = [&](const std::string& line) {
         bool ok = false;
-        json::Value v = json::Parse(line, &ok);
+        json::Value v = json::Parse(json::LossyUtf8(line), &ok);
         if (!ok) return;
         const std::string& delta = v["response"].asString();
         if (!delta.empty()) {
@@ -481,7 +481,7 @@ std::optional<std::wstring> ParseOpenAISSELine(const std::string& line) {
     const std::string payload = util::Trim(line.substr(5));
     if (payload == "[DONE]") return std::nullopt;
     bool ok = false;
-    json::Value value = json::Parse(payload, &ok);
+    json::Value value = json::Parse(json::LossyUtf8(payload), &ok);
     if (!ok) return std::nullopt;
     const json::Value& delta = value["choices"].at(0)["delta"]["content"];
     if (!delta.isString() || delta.asString().empty()) return std::nullopt;

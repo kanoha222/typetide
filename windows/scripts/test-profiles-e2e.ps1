@@ -98,7 +98,7 @@ $IdPresetMode = 3020
 $WM_KEYDOWN = 0x0100; $VK_DOWN = 0x28; $VK_RETURN = 0x0D
 # Control IDs of SettingsWindow's profile summaries.
 $SIdSummary = @(1901, 1902, 1903); $SIdManage = 1904; $SIdTest = 1905; $SIdTestStatus = 1906
-$SIdLanguage = @(1911, 1912, 1913); $SIdOaiUrl = 1929; $SIdOaiKey = 1931
+$SIdLanguage = @(1911, 1912, 1913); $SIdOaiUrl = 1929; $SIdOaiKey = 1931; $SIdOaiHint = 1932
 $EN_KILLFOCUS = 0x0200
 
 $script:failures = 0
@@ -298,7 +298,9 @@ function Test-SettingsSummary {
     $moved = Read-Settings
     Check ($moved.openAIBaseURL -eq 'https://other-provider.example.test/v1' -and -not $moved.openAICredentialRef) `
         "moving the base URL to another origin clears the saved API key" "ref '$($moved.openAICredentialRef)'"
-    Check ((Get-Text $settingsWindow $SIdOaiKey) -eq '') "the API key field is emptied for the new endpoint"
+    # (A password field's text is never readable from another process, so check the notice instead.)
+    Check ((Get-Text $settingsWindow $SIdOaiHint) -like '*key was cleared*') `
+        "the Settings window says the key must be entered again for the new endpoint" "'$(Get-Text $settingsWindow $SIdOaiHint)'"
 
     Click $settingsWindow $SIdTest
     $finished = Wait-For { (Get-Text $settingsWindow $SIdTestStatus) -like 'Tested*' } 15000

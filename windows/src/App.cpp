@@ -66,8 +66,13 @@ bool App::init(HINSTANCE inst) {
 
     tray_.onToggleEnabled = [this] {
         Settings& s = Settings::shared();
-        s.enabled = !s.enabled;
-        s.save();
+        const bool enabled = !s.committedData().enabled;
+        std::string error;
+        if (!profilebinding::CommitChange(s, [enabled](SettingsData& d) { d.enabled = enabled; }, &error)) {
+            const std::wstring message = L"TypeTide couldn't save this change, so it was undone.\n\n" + util::Widen(error);
+            MessageBoxW(nullptr, message.c_str(), L"TypeTide", MB_OK | MB_ICONWARNING);
+            return;
+        }
         applyEnabledState();
     };
     tray_.onOpenSettings = [this] { openSettings(); };
