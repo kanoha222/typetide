@@ -1,4 +1,5 @@
 #include "UpdateChecker.h"
+#include "EndpointPolicy.h"
 #include "Http.h"
 #include "Json.h"
 #include "ProfileBinding.h"
@@ -13,6 +14,9 @@
 namespace updatechecker {
 
 namespace {
+
+constexpr wchar_t kLatestReleaseApi[] = L"https://api.github.com/repos/kanoha222/typetide/releases/latest";
+constexpr wchar_t kReleasesPage[] = L"https://github.com/kanoha222/typetide/releases";
 
 std::mutex g_mu;
 std::wstring g_latestUrl;
@@ -44,33 +48,25 @@ bool isNewer(const std::string& latest, const std::string& current) {
     return false;
 }
 
-void checkWorker(HWND notifyWindow, UINT notifyMessage, bool alwaysNotify) {
-    http::Result r = http::Get(L"https://api.github.com/repos/everettjf/typetide/releases/latest",
-                               L"Accept: application/vnd.github.v3+json\r\n");
-    if (!r.ok) {
-        if (alwaysNotify && notifyWindow) PostMessageW(notifyWindow, notifyMessage, 2, 0);
-        return;
-    }
+/// One check of the latest release; a newer one becomes the page ReleasesURL() opens.
+CheckResult checkOnce() {
+    http::Result r = http::Get(LatestReleaseApi(), L"Accept: application/vnd.github.v3+json\r\n");
     bool ok = false;
-    json::Value v = json::Parse(r.body, &ok);
-    if (!ok || v["prerelease"].asBool()) {
-        if (alwaysNotify && notifyWindow) PostMessageW(notifyWindow, notifyMessage, 2, 0);
-        return;
-    }
+    json::Value v = r.ok ? json::Parse(r.body, &ok) : json::Value();
+    const std::string tag = ok && !v["prerelease"].asBool() ? v["tag_name"].asString() : std::string();
+    if (tag.empty()) return CheckResult::Failed;
+    if (!isNewer(tag, TYPETIDE_VERSION_STRING)) return CheckResult::UpToDate;
+    std::lock_guard lock(g_mu);
+    g_latestUrl = util::Widen(v["html_url"].asString());
+    return CheckResult::Newer;
+}
 
-    std::string tag = v["tag_name"].asString();
-    if (tag.empty()) {
-        if (alwaysNotify && notifyWindow) PostMessageW(notifyWindow, notifyMessage, 2, 0);
-        return;
-    }
-    const bool newer = isNewer(tag, TYPETIDE_VERSION_STRING);
-
-    if (newer) {
-        std::lock_guard lock(g_mu);
-        g_latestUrl = util::Widen(v["html_url"].asString());
-    }
-    if (notifyWindow && (newer || alwaysNotify))
-        PostMessageW(notifyWindow, notifyMessage, newer ? 1 : 0, 0);
+/// wParam of the notification: 1 newer, 0 up to date, 2 failed. A background check only
+/// reports a newer release; an interactive one reports every outcome.
+CheckResult checkWorker(HWND notifyWindow, UINT notifyMessage, bool alwaysNotify) {
+    const CheckResult result = checkOnce();
+    if (notifyWindow && (result == CheckResult::Newer || alwaysNotify)) PostMessageW(notifyWindow, notifyMessage, static_cast<WPARAM>(result), 0);
+    return result;
 }
 
 } // namespace
@@ -94,7 +90,19 @@ void CheckIfDue(HWND notifyWindow, UINT notifyMessage) {
 
 std::wstring ReleasesURL() {
     std::lock_guard lock(g_mu);
-    return g_latestUrl.empty() ? L"https://github.com/everettjf/typetide/releases" : g_latestUrl;
+    return g_latestUrl.empty() ? std::wstring(kReleasesPage) : g_latestUrl;
+}
+
+std::wstring LatestReleaseApi() {
+    wchar_t feed[512]{};
+    const DWORD length = GetEnvironmentVariableW(L"TYPETIDE_UPDATE_FEED", feed, 512);
+    const bool loopback = length > 0 && length < 512 &&
+                          execution::ClassifyEndpoint(feed).kind == execution::EndpointKind::LoopbackHttp;
+    return loopback ? std::wstring(feed, length) : std::wstring(kLatestReleaseApi);
+}
+
+CheckResult CheckForTesting() {
+    return checkWorker(nullptr, 0, false);
 }
 
 void OpenReleasesPage() {

@@ -2,6 +2,7 @@
 #   POST */chat/completions → OpenAI 风格 SSE 流式
 #   POST /api/generate      → Ollama 风格 NDJSON 流式
 #   GET  /api/tags          → Ollama 已装模型列表：mock-default:latest、mock-exact:latest
+#   GET  */releases/latest  → GitHub 最新 release：v99.0.0（路径以 /old/ 开头时 v0.0.1）
 # 测试用：让 TypeTide 的两种后端都有可对接的本地端点。
 # 用法: .\mock-openai.ps1 [-Port 8199] [-Reply "TRANSLATED_TEXT"] [-RecordFile path]
 #
@@ -50,6 +51,11 @@ while ($listener.IsListening) {
         $hasThink = $null -ne $parsed.PSObject.Properties['think']
     } catch {}
 
+    if ($path -like "*/releases/latest") {
+        $tag = if ($path -like "/old/*") { "v0.0.1" } else { "v99.0.0" }
+        Send-Text $res 200 ('{"tag_name":"' + $tag + '","html_url":"https://github.com/kanoha222/typetide/releases/tag/' + $tag + '","prerelease":false}')
+        continue
+    }
     if ($path -eq "/api/tags") {
         Send-Text $res 200 '{"models":[{"name":"mock-default:latest"},{"name":"mock-exact:latest"}]}'
         continue

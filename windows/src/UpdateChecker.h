@@ -21,6 +21,15 @@ void CheckNowInteractive(HWND notifyWindow, UINT notifyMessage);
 /// 最新版本的发布页（无则返回 releases 首页）
 std::wstring ReleasesURL();
 
+/// The latest-release API this build checks: this fork's, or a loopback feed named by the
+/// TYPETIDE_UPDATE_FEED environment variable (self-tests only; any other value is ignored).
+std::wstring LatestReleaseApi();
+
+enum class CheckResult { UpToDate = 0, Newer = 1, Failed = 2 };
+
+/// Runs one update check synchronously, exactly like the background check (self-tests).
+CheckResult CheckForTesting();
+
 /// 打开发布页
 void OpenReleasesPage();
 

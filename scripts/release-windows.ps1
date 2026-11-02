@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $version = (Get-Content (Join-Path $root "VERSION") -Raw).Trim()
 $tag = "v$version"
+$repo = "kanoha222/typetide"  # releases and update checks use this repository
 
 # gh 可能不在 PATH（默认装在 Program Files）
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -27,20 +28,20 @@ $zip = Join-Path $root "windows\build\TypeTide-Windows-$version.zip"
 
 # release 不存在则创建
 $ErrorActionPreference = "Continue"
-gh release view $tag --repo everettjf/typetide *> $null
+gh release view $tag --repo $repo *> $null
 $exists = ($LASTEXITCODE -eq 0)
 if (-not $exists) {
     Write-Output "creating release $tag"
-    gh release create $tag --repo everettjf/typetide --title "TypeTide $version" `
+    gh release create $tag --repo $repo --title "TypeTide $version" `
         --notes "TypeTide $version — system-wide AI translation & inline rewrite.`n`n- Windows: download and run **TypeTide-Setup-$version.exe** (or use the portable zip)`n- macOS: download **TypeTide-$version.dmg** (uploaded separately if not yet present)" 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 } else {
     Write-Output "release $tag exists — uploading Windows assets to it"
 }
 
-gh release upload $tag $setup $zip --repo everettjf/typetide --clobber 2>&1 | ForEach-Object { "$_" }
+gh release upload $tag $setup $zip --repo $repo --clobber 2>&1 | ForEach-Object { "$_" }
 if ($LASTEXITCODE -ne 0) { throw "asset upload failed" }
 $ErrorActionPreference = "Stop"
 
 Write-Output ""
-Write-Output "released: https://github.com/everettjf/typetide/releases/tag/$tag"
+Write-Output "released: https://github.com/$repo/releases/tag/$tag"

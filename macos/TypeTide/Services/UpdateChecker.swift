@@ -11,7 +11,7 @@ import Combine
 
 
 // New releases
-// https://github.com/everettjf/typetide
+// https://github.com/kanoha222/typetide
 
 /// GitHub Release 响应结构
 struct GitHubRelease: Codable {
@@ -39,7 +39,7 @@ class UpdateChecker: ObservableObject {
     // MARK: - Configuration
 
     /// GitHub 仓库信息 - 请修改为你的仓库
-    private let githubOwner = "everettjf"  // 修改为你的 GitHub 用户名
+    private let githubOwner = "kanoha222"  // the repository this build is released from
     private let githubRepo = "TypeTide"              // 修改为你的仓库名
 
     // MARK: - Published Properties

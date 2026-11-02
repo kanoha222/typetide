@@ -8,6 +8,7 @@
 #include "TextReplacer.h"
 #include "TranslationExecution.h"
 #include "TranslationSession.h"
+#include "UpdateChecker.h"
 #include "Translator.h"
 #include "Util.h"
 #include <chrono>
@@ -496,6 +497,28 @@ void testLegacyKeyMigration() {
     SetEnvironmentVariableW(L"TYPETIDE_DATA_DIR", parent.c_str());
 }
 
+void testUpdateCheck(const MockEnv& env) {
+    printf("[update check]\n");
+    const std::wstring forkFeed = L"https://api.github.com/repos/kanoha222/typetide/releases/latest";
+    SetEnvironmentVariableW(L"TYPETIDE_UPDATE_FEED", nullptr);
+    check(updatechecker::LatestReleaseApi() == forkFeed, "release builds check this fork's latest release");
+    check(updatechecker::ReleasesURL() == L"https://github.com/kanoha222/typetide/releases",
+          "before a check, the releases page is this fork's");
+    const std::wstring mock = L"http://127.0.0.1:" + std::to_wstring(env.port);
+    SetEnvironmentVariableW(L"TYPETIDE_UPDATE_FEED", (mock + L"/old/releases/latest").c_str());
+    check(updatechecker::CheckForTesting() == updatechecker::CheckResult::UpToDate,
+          "an older latest release is reported as up to date");
+    SetEnvironmentVariableW(L"TYPETIDE_UPDATE_FEED", (mock + L"/repos/kanoha222/typetide/releases/missing").c_str());
+    check(updatechecker::CheckForTesting() == updatechecker::CheckResult::Failed, "a failed check is reported as failed");
+    SetEnvironmentVariableW(L"TYPETIDE_UPDATE_FEED", (mock + L"/repos/kanoha222/typetide/releases/latest").c_str());
+    check(updatechecker::CheckForTesting() == updatechecker::CheckResult::Newer, "a newer release is reported");
+    check(updatechecker::ReleasesURL() == L"https://github.com/kanoha222/typetide/releases/tag/v99.0.0",
+          "the page of the newer release is offered");
+    SetEnvironmentVariableW(L"TYPETIDE_UPDATE_FEED", L"https://feed.example.test/releases/latest");
+    check(updatechecker::LatestReleaseApi() == forkFeed, "a non-loopback override is ignored");
+    SetEnvironmentVariableW(L"TYPETIDE_UPDATE_FEED", nullptr);
+}
+
 void testReplaceGuards() {
     printf("[replacement guards]\n");
     const std::wstring original = L"CLIPBOARD_BEFORE_REPLACE";
@@ -568,6 +591,7 @@ int RunRuntimeSelfTests() {
     testReplaceGuards();
     testEpochBackfill(env);
     testLegacyKeyMigration();
+    testUpdateCheck(env);
     if (userClipboard) clipboard::SetText(*userClipboard);
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nall runtime tests passed\n", g_failures);
     return g_failures ? 1 : 0;
