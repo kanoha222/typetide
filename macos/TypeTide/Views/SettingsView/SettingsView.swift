@@ -39,6 +39,8 @@ struct SettingsView: View {
                 switch selection {
                 case .general:
                     GeneralSettingsView()
+                case .profiles:
+                    ProfilesSettingsView()
                 case .behavior:
                     BehaviorSettingsView()
                 case .backend:

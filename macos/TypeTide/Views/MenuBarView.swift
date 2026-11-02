@@ -5,6 +5,7 @@ import AppKit
 struct MenuBarView: View {
     @StateObject private var updateChecker = UpdateChecker.shared
     @AppStorage(AppSettings.Keys.enabled) private var isEnabled = true
+    @ObservedObject private var profileStore = ProfileStore.shared
 
     var body: some View {
         if updateChecker.hasNewVersion {
@@ -27,6 +28,26 @@ struct MenuBarView: View {
 
         Text("\(AppSettings.readShortcutAction.displayName):  \(AppSettings.readShortcut?.displayString ?? "Not set")")
         Text("\(AppSettings.rewriteShortcutAction.displayName):  \(AppSettings.rewriteShortcut?.displayString ?? "Not set")")
+
+        Divider()
+
+        // One submenu per entry: the committed profiles, the bound one checked. A change only
+        // affects later triggers.
+        ForEach(ProfileEntry.allCases) { entry in
+            Menu("\(entry.label) profile") {
+                ForEach(profileStore.configuration.profiles) { profile in
+                    Button {
+                        profileStore.bind(entry, to: profile.id)
+                    } label: {
+                        if profileStore.configuration.bindings.profileId(for: entry) == profile.id {
+                            Label(profile.name, systemImage: "checkmark")
+                        } else {
+                            Text(profile.name)
+                        }
+                    }
+                }
+            }
+        }
 
         Divider()
 

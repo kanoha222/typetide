@@ -61,24 +61,21 @@ enum OllamaModelResolver {
         return Double(model[range])
     }
 
-    /// 若当前设置的模型未安装，则自动选一个已装的生成模型写回设置。
-    /// 仅在 Ollama 后端时执行。返回最终使用的模型名（或 nil 表示无可用模型）。
-    @discardableResult
-    static func ensureValidDefault() async -> String? {
-        guard AppSettings.backend == .ollama else { return AppSettings.ollamaModel }
+    /// Warms the Ollama models that bound profiles use and that are installed, each once. A
+    /// missing model is only flagged in Settings, never replaced by another one.
+    static func preloadBoundModels() async {
+        let configuration = ProfileStore.shared.configuration
+        var models: [String] = []
+        for entry in ProfileEntry.allCases {
+            guard let profile = configuration.profile(for: entry), profile.backend == .ollama,
+                  !models.contains(profile.model) else { continue }
+            models.append(profile.model)
+        }
+        guard !models.isEmpty else { return }
         let installed = await installedModels()
-        guard !installed.isEmpty else { return nil }
-
-        let current = AppSettings.ollamaModel
-        if installed.contains(current), !isEmbedding(current) {
-            return current
+        for model in models where installed.contains(model) || installed.contains(model + ":latest") {
+            await preload(model)
         }
-        // 优先非 embedding 模型
-        let candidate = installed.first(where: { !isEmbedding($0) }) ?? installed.first
-        if let candidate {
-            AppSettings.ollamaModel = candidate
-        }
-        return candidate
     }
 
     /// Ask Ollama to load the configured model and keep it warm. This uses an empty,

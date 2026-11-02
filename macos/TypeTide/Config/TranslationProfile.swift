@@ -99,18 +99,83 @@ struct ProfileConfiguration: Codable, Equatable {
 
     /// A copy with only `entry` bound to `profileId` (not validated).
     func withBinding(_ entry: ProfileEntry, to profileId: String) -> ProfileConfiguration {
-        self  // RED scaffold
+        var copy = self
+        switch entry {
+        case .shortcut1: copy.bindings.shortcut1ProfileId = profileId
+        case .shortcut2: copy.bindings.shortcut2ProfileId = profileId
+        case .selection: copy.bindings.selectionProfileId = profileId
+        }
+        return copy
     }
 
     /// nil when the configuration may be saved, otherwise the reason it may not.
     func validationError() -> String? {
-        nil  // RED scaffold
+        guard !profiles.isEmpty else { return "At least one translation profile is required." }
+        guard profiles.count <= Self.maxProfiles else {
+            return "TypeTide supports up to \(Self.maxProfiles) translation profiles."
+        }
+        var seen = Set<String>()
+        for item in profiles {
+            if let error = Self.validationError(of: item) { return error }
+            guard seen.insert(item.id).inserted else { return "Two profiles share the same identifier." }
+        }
+        for entry in ProfileEntry.allCases where profile(for: entry) == nil {
+            return "\(entry.label) is bound to a profile that does not exist."
+        }
+        return nil
+    }
+
+    /// The reason `profile` may not be saved, or nil. Text is never truncated to fit.
+    static func validationError(of profile: TranslationProfile) -> String? {
+        if profile.id.isEmpty || profile.id.utf8.count > maxIdBytes { return "A profile has an invalid identifier." }
+        if isBlank(profile.name) { return "Every profile needs a name." }
+        if profile.name.utf16.count > maxNameUTF16 {
+            return "The profile name “\(profile.name.prefix(24))…” is longer than \(maxNameUTF16) characters."
+        }
+        if profile.systemPrompt.utf16.count > maxPromptUTF16 {
+            return "The system prompt of “\(profile.name)” is longer than \(maxPromptUTF16) characters."
+        }
+        if profile.promptMode == .custom && isBlank(profile.systemPrompt) {
+            return "The custom system prompt of “\(profile.name)” is empty."
+        }
+        if profile.model.utf8.count > maxModelBytes { return "The model name of “\(profile.name)” is too long." }
+        if profile.backend != .builtIn && isBlank(profile.model) {
+            return "“\(profile.name)” needs a model name for \(profile.backend.displayName)."
+        }
+        return nil
+    }
+
+    static func isBlank(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Profiles generated from the settings of builds without profiles: each shortcut is bound by
     /// its saved action (popup → the read profile, replace → the rewrite profile), selection reads.
     static func migrated(from legacy: LegacyTranslationSettings) -> ProfileConfiguration {
-        defaults  // RED scaffold
+        let fallback = LegacyTranslationSettings()
+        func usable(_ model: String, orUse replacement: String) -> String {
+            isBlank(model) || model.utf8.count > maxModelBytes ? replacement : model
+        }
+        let model: String
+        switch legacy.backend {
+        case .builtIn: model = ""
+        case .openai: model = usable(legacy.openAIModel, orUse: fallback.openAIModel)
+        case .ollama: model = usable(legacy.ollamaModel, orUse: fallback.ollamaModel)
+        }
+        let read = TranslationProfile(id: "legacy-read", name: "默认翻译", nativeLanguage: legacy.nativeLanguage,
+                                      foreignLanguage: legacy.foreignLanguage, direction: legacy.readDirection,
+                                      promptMode: .preset, presetStyle: .faithful, systemPrompt: "",
+                                      backend: legacy.backend, model: model)
+        var rewrite = read
+        rewrite.id = "legacy-rewrite"
+        rewrite.name = "默认改写"
+        rewrite.direction = legacy.rewriteDirection
+        rewrite.presetStyle = legacy.rewriteStyle
+        return ProfileConfiguration(
+            profiles: [read, rewrite],
+            bindings: ProfileBindings(shortcut1ProfileId: legacy.readAction.usesPopup ? read.id : rewrite.id,
+                                      shortcut2ProfileId: legacy.rewriteAction.usesPopup ? read.id : rewrite.id,
+                                      selectionProfileId: read.id))
     }
 }
 
@@ -128,6 +193,20 @@ struct LegacyTranslationSettings: Equatable {
     var rewriteAction: ShortcutAction = .smartReplace
 
     static func read(from defaults: UserDefaults) -> LegacyTranslationSettings {
-        LegacyTranslationSettings()  // RED scaffold
+        var legacy = LegacyTranslationSettings()
+        func stored<Value: RawRepresentable>(_ key: String) -> Value? where Value.RawValue == String {
+            defaults.string(forKey: key).flatMap { Value(rawValue: $0) }
+        }
+        if let value: Language = stored("sourceLanguage") { legacy.nativeLanguage = value }
+        if let value: Language = stored("targetLanguage") { legacy.foreignLanguage = value }
+        if let value: TranslationDirection = stored(AppSettings.Keys.readDirection) { legacy.readDirection = value }
+        if let value: TranslationDirection = stored(AppSettings.Keys.rewriteDirection) { legacy.rewriteDirection = value }
+        if let value: RewriteStyle = stored(AppSettings.Keys.rewriteStyle) { legacy.rewriteStyle = value }
+        if let value: TranslationBackend = stored(AppSettings.Keys.backend) { legacy.backend = value }
+        if let value = defaults.string(forKey: AppSettings.Keys.openAIModel) { legacy.openAIModel = value }
+        if let value = defaults.string(forKey: AppSettings.Keys.ollamaModel) { legacy.ollamaModel = value }
+        if let value: ShortcutAction = stored(AppSettings.Keys.readShortcutAction) { legacy.readAction = value }
+        if let value: ShortcutAction = stored(AppSettings.Keys.rewriteShortcutAction) { legacy.rewriteAction = value }
+        return legacy
     }
 }

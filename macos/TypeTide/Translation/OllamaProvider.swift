@@ -35,16 +35,21 @@ struct OllamaProvider: TranslationProvider {
                     continuation.finish(throwing: TranslationError.notConfigured("Invalid Ollama host"))
                     return
                 }
-                let prompt = TranslationPrompt.plain(request.text, target: request.target, source: request.source, style: request.style)
+                // A custom profile sends its rendered system prompt as `system` and the text unchanged
+                // as `prompt`; presets keep the plain generate prompt.
+                let system = request.systemPrompt
+                let prompt = system == nil
+                    ? TranslationPrompt.plain(request.text, target: request.target, source: request.source, style: request.style)
+                    : request.text
                 do {
                     do {
                         try await performOllamaRequest(
-                            url: url, model: model, prompt: prompt, disableThinking: true,
+                            url: url, model: model, system: system, prompt: prompt, disableThinking: true,
                             continuation: continuation)
                     } catch let error as OllamaHTTPError where error.statusCode == 400 && !Task.isCancelled {
                         // 老版本 Ollama 不认识 think 字段；与 Windows 一致，去掉后兼容重试。
                         try await performOllamaRequest(
-                            url: url, model: model, prompt: prompt, disableThinking: false,
+                            url: url, model: model, system: system, prompt: prompt, disableThinking: false,
                             continuation: continuation)
                     }
                     continuation.finish()
@@ -72,6 +77,7 @@ private struct OllamaHTTPError: Error {
 private func performOllamaRequest(
     url: URL,
     model: String,
+    system: String?,
     prompt: String,
     disableThinking: Bool,
     continuation: AsyncThrowingStream<String, Error>.Continuation
@@ -87,6 +93,7 @@ private func performOllamaRequest(
             "top_k": OllamaConfig.topK
         ]
     ]
+    if let system { body["system"] = system }
     if disableThinking { body["think"] = false }
 
     var request = URLRequest(url: url)

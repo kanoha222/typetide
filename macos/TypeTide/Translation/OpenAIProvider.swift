@@ -56,7 +56,8 @@ struct OpenAIProvider: TranslationProvider {
                     "stream": true,
                     "temperature": 0.3,
                     "messages": [
-                        ["role": "system", "content": TranslationPrompt.system(target: request.target, source: request.source, style: request.style)],
+                        ["role": "system", "content": request.systemPrompt
+                            ?? TranslationPrompt.system(target: request.target, source: request.source, style: request.style)],
                         ["role": "user", "content": request.text]
                     ]
                 ]

@@ -47,6 +47,9 @@ struct TranslationRequest {
     let target: Language
     /// 风格（仅改写用；读翻译为 faithful）
     var style: RewriteStyle = .faithful
+    /// A custom profile's rendered system prompt. It replaces the default instructions entirely;
+    /// the text is still sent separately and unchanged (OpenAI user message / Ollama prompt).
+    var systemPrompt: String? = nil
 }
 
 protocol TranslationProvider {
