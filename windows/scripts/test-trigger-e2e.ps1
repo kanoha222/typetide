@@ -372,7 +372,13 @@ function Test-SwappedActions {
     $popup = Popup-Text
     Check ($popup -eq $Exact -and (Models $from) -eq 'mock-exact') `
         "shortcut 2 now opens a popup, still with its own profile" "got '$(Visible-Text $popup)', models '$(Models $from)'"
-    Close-Popup | Out-Null
+    # The popup shows the custom output exactly; Replace pastes it without the trailing line break.
+    Check (Click-Replace) "the custom profile's popup offers Replace"
+    $replaced = (Replaced-Text) -replace "`r`n", "`n"
+    Check ($replaced -eq $Exact.TrimEnd("`n")) `
+        "popup Replace keeps the custom output's indentation and tab, without the trailing line break" `
+        "got '$(Visible-Text $replaced)'"
+    Check ((Get-Clipboard -Raw) -eq $Clipboard) "the clipboard is restored after popup Replace"
 }
 
 function Test-SameAction {

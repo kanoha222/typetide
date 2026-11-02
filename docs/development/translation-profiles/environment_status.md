@@ -61,7 +61,7 @@
 - 第 3 步实现：设置窗口 Translation 页改为三个入口的摘要（profile、backend 与模型、本地/网络/云端、模型未安装提示、连接测试结果）与 “Manage profiles…”，保留内置模型下载、Ollama 地址与已装模型、云端 provider/Base URL/API key；Languages 页改为各入口的语言/方向/风格摘要；Behavior 页移除风格选择；快捷键页改称 Shortcut 1/2。旧的 backend 单选、Ollama/API 模型、语言/方向/风格控件已删除（字段仍保留在 settings.json 供迁移）。`ollamamodels::ApplyResolvedModels`/`EnsureValidDefault` 已删除：发现结果只用于预加载已绑定且已安装的模型，从不替换或保存；预加载由代次计数取消过期的批次。“Test bound models” 对每个已绑定的 backend + 模型各测一次（`translator::CheckConnectionAsync`，固定合成句、每次唯一、不命中缓存）。发现结果按 Ollama 端点版本、连接测试按连接 epoch 与绑定集合经 `profilestatus::ResultGuard` 丢弃过期结果。编辑器保存与托盘绑定后通知设置窗口刷新。独立审查后的修正：连接测试不读写翻译缓存、不记翻译诊断；设置窗口填好控件后才显示；连接或绑定变化后此前的测试通过不再计入首次启动完成。已知未处理：首次启动时应用与设置窗口各做一次发现，同一模型可能被预热两次（无害）。
 - Phase 5 覆盖率工具（用户选择）：CI 运行器上从 OpenCppCoverage 官方 GitHub release 下载安装包，运行前核对固定的 SHA-256；本机不安装任何工具。
 
-## Phase 5：验证与证据（进行中）
+## Phase 5：验证与证据（自动化门槛已满足，待用户验收）
 
 - 触发路径端到端（job `trigger-path-e2e`，[commit `01e78cd` 全部通过](https://github.com/kanoha222/typetide/actions/runs/40816512097/job/123258733455)）：真实 TypeTide.exe + 注入全局快捷键 + WinForms/WPF 宿主 + 本机 mock（Ollama，三个 profile 各用不同 mock 模型，按请求记录判断每次触发执行了哪个 profile）。覆盖快捷键 1 弹窗与弹窗 Replace（剪贴板还原）、快捷键 2 直接替换且 custom 输出逐字节一致、custom 提示词渲染进 system 而选中文字原样发送、两个槽位动作互换与相同动作时仍按物理槽位选 profile、清空的快捷键不触发、划词入口执行 Selection 绑定（WPF 宿主）、托盘三个绑定子菜单列出全部 profile 并勾选当前绑定、托盘改绑后下一次触发立即生效；并在 CI 上首次运行既有的 `test-e2e.ps1`（WinForms）与 `test-e2e-wpf.ps1`（WPF）冒烟测试。首次运行（`73d8741`）划词与托盘改绑失败：前者是测试只注入了鼠标抬起，后者在下一次运行（`1deb187`）未复现，按偶发处理并保留诊断输出。
 - 已知产品限制（非本 PR 引入）：WinForms TextBox 不提供 UIA TextPattern（调试日志 `tp=0`），快捷键取词在其中走 Ctrl+C 兜底，而划词入口只用 UIA、从不对鼠标抬起发送 Ctrl+C，因此在此类控件中不会触发。
