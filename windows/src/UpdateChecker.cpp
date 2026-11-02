@@ -45,7 +45,7 @@ bool isNewer(const std::string& latest, const std::string& current) {
 }
 
 void checkWorker(HWND notifyWindow, UINT notifyMessage, bool alwaysNotify) {
-    http::Result r = http::Get(L"https://api.github.com/repos/everettjf/typetide/releases/latest",
+    http::Result r = http::Get(L"https://api.github.com/repos/kanoha222/typetide/releases/latest",
                                L"Accept: application/vnd.github.v3+json\r\n");
     if (!r.ok) {
         if (alwaysNotify && notifyWindow) PostMessageW(notifyWindow, notifyMessage, 2, 0);
@@ -94,7 +94,7 @@ void CheckIfDue(HWND notifyWindow, UINT notifyMessage) {
 
 std::wstring ReleasesURL() {
     std::lock_guard lock(g_mu);
-    return g_latestUrl.empty() ? L"https://github.com/everettjf/typetide/releases" : g_latestUrl;
+    return g_latestUrl.empty() ? L"https://github.com/kanoha222/typetide/releases" : g_latestUrl;
 }
 
 void OpenReleasesPage() {

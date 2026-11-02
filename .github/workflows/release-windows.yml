@@ -1,0 +1,104 @@
+name: Release (Windows)
+
+# Manual only. Builds the Windows release exactly like windows/scripts/build-release.ps1 (Release exe,
+# --selftest gate, hash-pinned llama.cpp runtime, Inno Setup installer, portable zip) on a GitHub
+# runner, so no local toolchain is needed. The installer and zip are always uploaded as workflow
+# artifacts. With draft_release, they are also attached to a DRAFT release vX.Y.Z (VERSION file) on
+# this repository; nothing is public until you publish that draft by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: Attach the installer and zip to a draft release vX.Y.Z (created if missing)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-windows
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build, self-test and package
+    runs-on: windows-2025  # InnoSetup 6, Ninja and GitHub CLI are preinstalled on this image
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read VERSION and check it is synced
+        id: version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION is not x.y.z: $version" }
+          $cmake = Get-Content windows/CMakeLists.txt -Raw
+          if ($cmake -notmatch "project\(TypeTide VERSION $([regex]::Escape($version))") {
+            throw "windows/CMakeLists.txt is not at $version; run scripts/bump-version.sh $version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Output "TypeTide $version"
+
+      - name: Build, self-test and package (build-release.ps1)
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build-release.ps1
+          exit $LASTEXITCODE
+
+      - name: Upload installer and portable zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: TypeTide-Windows-${{ steps.version.outputs.version }}
+          path: |
+            windows/build/TypeTide-Setup-${{ steps.version.outputs.version }}.exe
+            windows/build/TypeTide-Windows-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  draft-release:
+    name: Attach to a draft release
+    needs: build
+    if: ${{ inputs.draft_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # only this job can create or update the draft release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download the packaged files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: TypeTide-Windows-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Create the draft release if missing, then upload the Windows assets
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "true" ]; then
+              echo "release $tag is already published; refusing to change its assets" >&2
+              exit 1
+            fi
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+              --title "TypeTide $VERSION" \
+              --notes "TypeTide $VERSION — system-wide AI translation & inline rewrite with translation profiles.
+
+          - Windows: download and run **TypeTide-Setup-$VERSION.exe** (or use the portable zip)
+          - macOS: built and notarized separately on a Mac (scripts/release-macos.sh)"
+          fi
+          gh release upload "$tag" "dist/TypeTide-Setup-$VERSION.exe" "dist/TypeTide-Windows-$VERSION.zip" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          echo "draft release: https://github.com/$GITHUB_REPOSITORY/releases (publish it after testing)"

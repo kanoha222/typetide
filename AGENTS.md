@@ -98,7 +98,12 @@ Release per platform, either order, onto the same `vX.Y.Z` tag:
   `macos/scripts/build-release.sh`, then create-if-missing + upload
   `TypeTide-X.Y.Z.dmg`.
 Both need `gh auth login` once. `UpdateChecker` (both apps) reads
-`releases/latest` at `everettjf/typetide`.
+`releases/latest` at `kanoha222/typetide` (this fork publishes its own releases; upstream is
+`everettjf/typetide`). Without a Windows toolchain, run the **Release (Windows)** workflow
+(`.github/workflows/release-windows.yml`, Actions → Run workflow): it builds, self-tests and
+packages on GitHub, uploads the installer and zip as artifacts and, if asked, attaches them to a
+**draft** release `vX.Y.Z` that you publish by hand after testing. macOS releases still need a
+Mac with Xcode, a Developer ID certificate and notarization credentials.
 
 Keep `README.md` free of the app's release version — link to `../../releases`,
 refer to artifacts as `TypeTide-Setup-x.y.z.exe` / `build/TypeTide.dmg` style,

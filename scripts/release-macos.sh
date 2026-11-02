@@ -13,6 +13,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(tr -d ' \r\n' < "$ROOT/VERSION")"
 TAG="v$VERSION"
+REPO="kanoha222/typetide"  # releases and update checks use this repository
 
 command -v gh >/dev/null || { echo "gh not installed — brew install gh" >&2; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "gh is not authenticated — run: gh auth login" >&2; exit 1; }
@@ -33,9 +34,9 @@ DMG="$ROOT/macos/build/TypeTide-$VERSION.dmg"
 NAMED_DMG="$ROOT/macos/build/TypeTide-$VERSION.dmg"
 
 # release 不存在则创建
-if ! gh release view "$TAG" --repo everettjf/typetide >/dev/null 2>&1; then
+if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     echo "creating release $TAG"
-    gh release create "$TAG" --repo everettjf/typetide --title "TypeTide $VERSION" \
+    gh release create "$TAG" --repo "$REPO" --title "TypeTide $VERSION" \
         --notes "TypeTide $VERSION — system-wide AI translation & inline rewrite.
 
 - macOS: download **TypeTide-$VERSION.dmg**
@@ -44,7 +45,7 @@ else
     echo "release $TAG exists — uploading macOS asset to it"
 fi
 
-gh release upload "$TAG" "$NAMED_DMG" --repo everettjf/typetide --clobber
+gh release upload "$TAG" "$NAMED_DMG" --repo "$REPO" --clobber
 
 echo
-echo "released: https://github.com/everettjf/typetide/releases/tag/$TAG"
+echo "released: https://github.com/$REPO/releases/tag/$TAG"
