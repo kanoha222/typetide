@@ -285,6 +285,10 @@ Value Parse(const std::string& text, bool* okOut) {
     return parser.ok ? v : Value();
 }
 
+std::string LossyUtf8(const std::string& text) {
+    return text;  // RED scaffold
+}
+
 std::string Escape(const std::string& s) {
     std::string out = "\"";
     for (unsigned char c : s) {

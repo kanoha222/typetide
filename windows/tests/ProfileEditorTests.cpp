@@ -180,7 +180,19 @@ void TestDiscardAndSave() {
 
 } // namespace
 
+void TestPromptLineEndings() {
+    using profileeditor::PromptFromEdit;
+    Check(PromptFromEdit("a\r\nb\r\n", "a\nb\n") == "a\nb\n" &&
+              PromptFromEdit("a\r\nb c\r\n", "a\nb\n") == "a\nb c\n",
+          "an LF-only prompt keeps LF line breaks after an edit");
+    Check(PromptFromEdit("a\r\nb", "a\r\nb x") == "a\r\nb", "a CRLF prompt keeps CRLF");
+    Check(PromptFromEdit("Line 1\r\n\tLine 2  ", "") == "Line 1\r\n\tLine 2  " &&
+              PromptFromEdit("one\r\ntwo", "single line") == "one\r\ntwo",
+          "a prompt without line breaks keeps what was typed");
+}
+
 void RunProfileEditorTests() {
+    TestPromptLineEndings();
     TestStartsClean();
     TestEditsAreExactAndIsolated();
     TestModesAndBackendKeepDrafts();

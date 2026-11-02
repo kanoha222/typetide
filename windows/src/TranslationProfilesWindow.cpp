@@ -228,12 +228,16 @@ void createPromptPane() {
 
 void createFooter() {
     const Settings& s = Settings::shared();
-    label((L"Shortcut 1  (" + s.readShortcut.displayString() + L")").c_str(), 16, 606, 280);
-    label((L"Shortcut 2  (" + s.rewriteShortcut.displayString() + L")").c_str(), 312, 606, 280);
-    label(L"Selection icon / auto-translate", 608, 606, 280);
-    for (int i = 0; i < 3; ++i)
+    const std::wstring labels[] = {L"Shortcut 1  (" + s.readShortcut.displayString() + L")",
+                                   L"Shortcut 2  (" + s.rewriteShortcut.displayString() + L")",
+                                   L"Selection icon / auto-translate"};
+    // Each label is created right before its combo box: screen readers name a Win32 control
+    // after the label that precedes it.
+    for (int i = 0; i < 3; ++i) {
+        label(labels[i].c_str(), 16 + 296 * i, 606, 280);
         make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 16 + 296 * i, 626, 280, 300,
              kBindings[i].id);
+    }
     make(L"BUTTON", L"Test fixed text", WS_TABSTOP | BS_PUSHBUTTON, 16, 666, 130, 30, kTest);
     make(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, 156, 668, 540, 36, kStatus);
     make(L"BUTTON", L"Save", WS_TABSTOP | BS_PUSHBUTTON, 712, 666, 80, 30, kSave);

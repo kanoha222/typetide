@@ -145,7 +145,23 @@ void TestOllamaRejections() {
 
 } // namespace
 
+void TestSameOrigin() {
+    using execution::SameOrigin;
+    Check(SameOrigin(L"https://api.example.test/v1", L"https://API.example.test/other"),
+          "same scheme, host and port is one origin whatever the path or host case");
+    Check(SameOrigin(L"https://api.example.test", L"https://api.example.test:443/v1"),
+          "the default port equals an explicit default port");
+    Check(!SameOrigin(L"https://api.example.test/v1", L"https://openrouter.example.test/v1"),
+          "another host is another origin");
+    Check(!SameOrigin(L"http://127.0.0.1:8080/v1", L"https://127.0.0.1:8080/v1"), "another scheme is another origin");
+    Check(!SameOrigin(L"http://127.0.0.1:8080", L"http://127.0.0.1:8081"), "another port is another origin");
+    Check(!SameOrigin(L"", L"https://api.example.test") &&
+              !SameOrigin(L"https://user@api.example.test", L"https://user@api.example.test"),
+          "an empty or invalid URL never matches, not even itself");
+}
+
 void RunPrepareEndpointTests() {
+    TestSameOrigin();
     TestOpenAILoopbackHttp();
     TestOpenAIRemoteHttpRejected();
     TestOpenAIMalformedBases();

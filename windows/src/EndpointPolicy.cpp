@@ -144,4 +144,8 @@ EndpointInfo ClassifyEndpoint(const std::wstring& url) {
     return info;
 }
 
+bool SameOrigin(const std::wstring&, const std::wstring&) {
+    return false;  // RED scaffold
+}
+
 } // namespace execution

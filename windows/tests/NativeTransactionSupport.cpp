@@ -62,16 +62,22 @@ bool SameRuntime(const Settings& a, const Settings& b) {
            a.connectionEpoch() == b.connectionEpoch() && a.credentialRef() == b.credentialRef();
 }
 
+// A save writes "settings.json.<36-character id>.tmp"; none of those may remain afterwards.
 void CheckNoTemporaryFile(const ScopedStorageFixture& fixture) {
-    const std::wstring temporary = fixture.SettingsFile() + L".tmp";
-    const DWORD attributes = GetFileAttributesW(temporary.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES) {
-        const DWORD error = GetLastError();
-        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
-            throw InfraException(391, error);
-        }
-    }
-    Check(attributes == INVALID_FILE_ATTRIBUTES, "no settings temporary file remains");
+    const std::wstring file = fixture.SettingsFile();
+    const std::wstring directory = file.substr(0, file.find_last_of(L'\\'));
+    const std::wstring prefix = file.substr(file.find_last_of(L'\\') + 1) + L".";
+    WIN32_FIND_DATAW entry{};
+    HANDLE find = FindFirstFileW((directory + L"\\*").c_str(), &entry);
+    if (find == INVALID_HANDLE_VALUE) throw InfraException(391, GetLastError());
+    bool remaining = false;
+    do {
+        const std::wstring name = entry.cFileName;
+        remaining = remaining || (name.size() == prefix.size() + 36 + 4 && name.rfind(prefix, 0) == 0 &&
+                                  name.compare(name.size() - 4, 4, L".tmp") == 0);
+    } while (FindNextFileW(find, &entry));
+    FindClose(find);
+    Check(!remaining, "no settings temporary file remains");
 }
 
 void CheckUnchanged(const Settings& before, const Settings& after,

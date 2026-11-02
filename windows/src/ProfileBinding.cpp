@@ -28,6 +28,11 @@ bool CommitConfiguration(Settings& settings, ProfileConfiguration configuration,
     }
 }
 
+bool CommitChange(Settings&, const std::function<void(SettingsData&)>&, std::string* error) {
+    if (error) *error = "not implemented";  // RED scaffold
+    return false;
+}
+
 bool Commit(Settings& settings, ProfileEntry entry, const std::string& profileId, std::string* error) {
     const ProfileConfiguration& committed = settings.committedData().profileConfig;
     if (!profiles::Find(committed, profileId)) {

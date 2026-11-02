@@ -105,7 +105,7 @@ void ScopedStorageFixture::CreateAndVerifyDirectory(const std::wstring& runnerTe
     testDir_ = runnerTemp + L"\\" + dirName;
 
     // Check MAX_PATH limit before invoking any Win32/Util calls
-    const std::wstring expectedTmp = testDir_ + L"\\settings.json.tmp";
+    const std::wstring expectedTmp = testDir_ + L"\\settings.json.00000000-0000-0000-0000-000000000000.tmp";
     if (expectedTmp.size() >= MAX_PATH) {
         throw InfraException(104, 0);
     }

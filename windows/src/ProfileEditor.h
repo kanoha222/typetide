@@ -24,6 +24,10 @@ struct DeleteCheck {
     std::vector<ProfileEntry> boundBy;   // entries that must be given a replacement first
 };
 
+/// The prompt to store from an edit control's text: an EDIT control shows and returns CRLF, so a
+/// prompt that used LF-only line breaks keeps LF after an edit; any other prompt is kept as typed.
+std::string PromptFromEdit(const std::string& edited, const std::string& original);
+
 class Editor {
 public:
     /// Starts from the committed configuration; the first profile is selected.

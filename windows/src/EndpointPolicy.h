@@ -35,4 +35,8 @@ struct EndpointInfo {
 /// host tokens, case-insensitive. Path percent-escapes are allowed.
 EndpointInfo ClassifyEndpoint(const std::wstring& url);
 
+/// Same scheme, host (ASCII case-insensitive) and port; false when either URL is not a usable
+/// http(s) endpoint. An API key belongs to one origin.
+bool SameOrigin(const std::wstring& a, const std::wstring& b);
+
 } // namespace execution

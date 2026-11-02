@@ -339,6 +339,33 @@ size_t CountModelRequests(const MockEnv& env, size_t from, const std::string& mo
     return count;
 }
 
+void testGlobalCommit() {
+    printf("[settings change commit]\n");
+    Settings& settings = Settings::shared();
+    const bool enabledBefore = settings.committedData().enabled;
+    const std::string committedBase = settings.committedData().openAIBaseURL;
+    settings.openAIBaseURL = "http://192.0.2.10/v1";  // an unrelated, unsaved draft
+    std::string error;
+    check(profilebinding::CommitChange(settings, [&](SettingsData& d) { d.enabled = !enabledBefore; }, &error),
+          "a single settings change commits", error);
+    check(settings.committedData().enabled == !enabledBefore && settings.enabled == !enabledBefore,
+          "the change is committed and live");
+    check(settings.committedData().openAIBaseURL == committedBase && settings.openAIBaseURL == "http://192.0.2.10/v1",
+          "an unrelated draft is neither committed nor dropped");
+    const std::vector<std::wstring> appsBefore = settings.skipApps;
+    error.clear();
+    check(!profilebinding::CommitChange(settings, [](SettingsData& d) { d.skipApps.assign(101, L"too-many.exe"); },
+                                        &error) && !error.empty(),
+          "an invalid change is refused with an error");
+    check(settings.skipApps == appsBefore && settings.committedData().skipApps == appsBefore,
+          "a refused change leaves the live settings as they were");
+    Settings reloaded;
+    reloaded.load();
+    check(reloaded.committedData().enabled == !enabledBefore, "the committed change is saved");
+    settings.openAIBaseURL = committedBase;
+    profilebinding::CommitChange(settings, [&](SettingsData& d) { d.enabled = enabledBefore; }, &error);
+}
+
 void testMissingModel(const MockEnv& env) {
     printf("[missing Ollama model]\n");
     Settings& settings = Settings::shared();
@@ -535,6 +562,7 @@ int RunRuntimeSelfTests() {
     testCommittedBinding(env);
     testBindingCommit();
     testEditorConflict();
+    testGlobalCommit();
     testMissingModel(env);
     testConnectionCheck(env);
     testReplaceGuards();

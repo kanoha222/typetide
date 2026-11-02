@@ -98,7 +98,8 @@ $IdPresetMode = 3020
 $WM_KEYDOWN = 0x0100; $VK_DOWN = 0x28; $VK_RETURN = 0x0D
 # Control IDs of SettingsWindow's profile summaries.
 $SIdSummary = @(1901, 1902, 1903); $SIdManage = 1904; $SIdTest = 1905; $SIdTestStatus = 1906
-$SIdLanguage = @(1911, 1912, 1913)
+$SIdLanguage = @(1911, 1912, 1913); $SIdOaiUrl = 1929; $SIdOaiKey = 1931
+$EN_KILLFOCUS = 0x0200
 
 $script:failures = 0
 $script:app = $null
@@ -150,6 +151,11 @@ function Test-Accessibility([string]$mode) {
     $code = $LASTEXITCODE
     $output | ForEach-Object { Write-Output "    $_" }
     Check ($code -eq 0) "the $mode exposes every control to screen readers (native UI Automation)" "exit $code"
+}
+
+# The EN_KILLFOCUS a focus change sends: the Settings window commits connection fields on it.
+function Leave-Field($window, [int]$id) {
+    [W]::SendMessageInt($window, $WM_COMMAND, [IntPtr](($EN_KILLFOCUS -shl 16) -bor $id), (Control $window $id)) | Out-Null
 }
 
 function Read-Settings {
@@ -282,6 +288,17 @@ function Test-SettingsSummary {
         Check (-not ($texts -contains $legacy)) "the old '$legacy' control is gone"
     }
     Check (($texts -contains 'Base URL') -and ($texts -contains 'API key')) "the cloud connection fields stay"
+
+    # An API key belongs to its endpoint: moving the base URL to another origin clears it.
+    Set-Text $settingsWindow $SIdOaiKey 'synthetic-e2e-key'
+    Leave-Field $settingsWindow $SIdOaiKey
+    Check ([bool](Wait-For { (Read-Settings).openAICredentialRef })) "a typed API key is saved when the field is left"
+    Set-Text $settingsWindow $SIdOaiUrl 'https://other-provider.example.test/v1'
+    Leave-Field $settingsWindow $SIdOaiUrl
+    $moved = Read-Settings
+    Check ($moved.openAIBaseURL -eq 'https://other-provider.example.test/v1' -and -not $moved.openAICredentialRef) `
+        "moving the base URL to another origin clears the saved API key" "ref '$($moved.openAICredentialRef)'"
+    Check ((Get-Text $settingsWindow $SIdOaiKey) -eq '') "the API key field is emptied for the new endpoint"
 
     Click $settingsWindow $SIdTest
     $finished = Wait-For { (Get-Text $settingsWindow $SIdTestStatus) -like 'Tested*' } 15000

@@ -239,12 +239,14 @@ void TestPreexistingTemporaryOwnership(ScopedStorageFixture& fixture, FakeCreden
     if (!WriteFileBinary(temporary, sentinel)) throw InfraException(414, GetLastError());
     Settings candidate = receiver;
     candidate.openAIKey = "rejected-key-with-unowned-temp";
-    Check(!receiver.commit(candidate), "transaction refuses to overwrite an unowned pre-existing temporary");
+    Check(receiver.commit(candidate), "a leftover settings.json.tmp (e.g. from a crash) never blocks a save");
     const auto after = ReadFileBinary(fixture.SettingsFile());
     const auto retained = ReadFileBinary(temporary);
-    Check(SameRuntime(before, receiver) && after.readable && after.data == original.data && store.entries == entries,
-          "temporary collision rolls back only this transaction's staged key and preserves predecessor");
+    Check(!SameRuntime(before, receiver) && after.readable && after.data != original.data && store.entries != entries,
+          "the save is published despite the leftover");
     Check(retained.readable && retained.data == sentinel, "unowned temporary is neither overwritten nor deleted");
+    CheckNoTemporaryFile(fixture);
+    (void)entries;
 }
 
 void TestCredentialBoundaryAndCanonicalization(ScopedStorageFixture&, FakeCredentialStore& store) {

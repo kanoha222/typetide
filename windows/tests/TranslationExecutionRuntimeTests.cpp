@@ -120,6 +120,22 @@ void TestDeliveredOutput() {
     }
 }
 
+void TestLossyUtf8() {
+    using json::LossyUtf8;
+    const std::string valid = "plain \xE4\xBD\xA0\xE5\xA5\xBD \xF0\x9F\x98\x80 end";
+    Check(LossyUtf8(valid) == valid, "valid UTF-8 (CJK, emoji) passes through unchanged");
+    Check(LossyUtf8("a\xFF" "b") == "a\xEF\xBF\xBD" "b", "an invalid byte becomes U+FFFD");
+    Check(LossyUtf8("a\x80" "b") == "a\xEF\xBF\xBD" "b", "a lone continuation byte becomes U+FFFD");
+    Check(LossyUtf8("x\xE4\xBD") == "x\xEF\xBF\xBD", "a truncated sequence becomes one U+FFFD");
+    Check(LossyUtf8("\xC0\xAF").find("\xC0\xAF") == std::string::npos &&
+              LossyUtf8("\xED\xA0\x80").find("\xED\xA0\x80") == std::string::npos,
+          "overlong and surrogate encodings never pass through");
+    bool ok = false;
+    const json::Value line = json::Parse(LossyUtf8("{\"response\":\"ok \xFF more\"}"), &ok);
+    Check(ok && line["response"].asString() == "ok \xEF\xBF\xBD more",
+          "a stream line with one bad byte still parses, keeping the rest of its text");
+}
+
 void TestReplacementText() {
     using execution::ReplacementText;
     Check(ReplacementText(L"  line one\n\tline two\r\n\n", L"selected") == L"  line one\n\tline two",
@@ -156,6 +172,7 @@ void RunRuntimeContractTests() {
     TestEntryBinding();
     TestSwappedAndSharedBindings();
     TestReplacementText();
+    TestLossyUtf8();
     TestActionNotSlotDecidesDirection();
     TestUnresolvedBinding();
     TestFrozenCopy();

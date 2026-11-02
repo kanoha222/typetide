@@ -4,6 +4,14 @@
 
 namespace profileeditor {
 
+std::string PromptFromEdit(const std::string& edited, const std::string&) {
+    return edited;  // RED scaffold
+}
+
+} // namespace profileeditor
+
+namespace profileeditor {
+
 namespace {
 
 constexpr ProfileEntry kEntries[] = {ProfileEntry::Shortcut1, ProfileEntry::Shortcut2, ProfileEntry::Selection};
