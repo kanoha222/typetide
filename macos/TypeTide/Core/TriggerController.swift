@@ -5,6 +5,8 @@
 //  编排主链路：
 //  - 读·划词翻译：快捷键 / 划词图标 / 自动 → 弹窗流式显示译文。
 //  - 写·输入改写：快捷键 → 译为目标语言 → 直接替换或先预览。
+//  Shortcut 1, Shortcut 2 and the selection trigger each run the translation profile bound to
+//  them; the profile is frozen when the trigger fires, so later edits only affect later triggers.
 //
 
 import AppKit
@@ -14,6 +16,8 @@ import ApplicationServices
 final class TriggerController {
     static let shared = TriggerController()
     private init() {}
+
+    static let noProfileMessage = "No translation profile is bound to this shortcut. Choose one in Settings → Profiles."
 
     private let readHotkeyID: UInt32 = 1
     private let rewriteHotkeyID: UInt32 = 2
@@ -32,11 +36,6 @@ final class TriggerController {
             rewrite: AppSettings.rewriteShortcut, rewriteStatus: rewriteShortcutStatus
         )
     }
-
-    /// 母语（读模式的目标 / 写模式的源）
-    private var nativeLanguage: Language { LanguageConfig.sourceLanguage }
-    /// 外语（写模式的目标）
-    private var foreignLanguage: Language { LanguageConfig.targetLanguage }
 
     // MARK: - 生命周期
 
@@ -62,16 +61,17 @@ final class TriggerController {
             return
         }
 
+        // The physical slot chooses the profile; its configured action chooses popup or replace.
         if let readShortcut {
             readShortcutStatus = GlobalShortcutCenter.shared.register(id: readHotkeyID, shortcut: readShortcut) { [weak self] in
-                Task { @MainActor in self?.performShortcutAction(AppSettings.readShortcutAction) }
+                Task { @MainActor in self?.performShortcut(.shortcut1, action: AppSettings.readShortcutAction) }
             }
         } else {
             readShortcutStatus = .notConfigured
         }
         if let rewriteShortcut {
             rewriteShortcutStatus = GlobalShortcutCenter.shared.register(id: rewriteHotkeyID, shortcut: rewriteShortcut) { [weak self] in
-                Task { @MainActor in self?.performShortcutAction(AppSettings.rewriteShortcutAction) }
+                Task { @MainActor in self?.performShortcut(.shortcut2, action: AppSettings.rewriteShortcutAction) }
             }
         } else {
             rewriteShortcutStatus = .notConfigured
@@ -94,6 +94,7 @@ final class TriggerController {
                 // 图标贴合选区：优先用选区屏幕矩形，拿不到再退回鼠标点
                 let anchor = PopupPositioner.anchorRect(element: element, range: range)
                 SelectionIconWindow.shared.show(near: anchor, fallback: location) {
+                    // Clicking the icon is the trigger: the selection profile is frozen now.
                     self.presentRead(text: text, element: element, range: range)
                 }
             case .auto:
@@ -103,20 +104,28 @@ final class TriggerController {
         SelectionMonitor.shared.start()
     }
 
-    // MARK: - 读·划词翻译
-
-    private func performShortcutAction(_ action: ShortcutAction) {
-        if action.usesPopup { handleRead(action: action) }
-        else { handleRewrite(action: action) }
+    private func boundProfile(_ entry: ProfileEntry) -> TranslationProfile? {
+        ProfileStore.shared.configuration.profile(for: entry)
     }
 
-    func handleRead(action: ShortcutAction = .smartPopup) {
+    // MARK: - 读·划词翻译
+
+    private func performShortcut(_ entry: ProfileEntry, action: ShortcutAction) {
+        if action.usesPopup { handleRead(entry: entry, action: action) }
+        else { handleRewrite(entry: entry, action: action) }
+    }
+
+    func handleRead(entry: ProfileEntry = .shortcut1, action: ShortcutAction = .smartPopup) {
         guard AppSettings.isEnabled else { return }
         guard AccessibilityPermission.isGranted else {
             AccessibilityPermission.request()
             return
         }
         guard !AppSettings.shouldSkipFrontmostApplication() else { return }
+        guard let profile = boundProfile(entry) else {
+            presentCaptureFailure(Self.noProfileMessage)
+            return
+        }
         Task { @MainActor in
             guard let cap = await SelectionCapture.readSelection() else {
                 presentCaptureFailure("Couldn’t read selected text. The app may not expose its selection and the clipboard fallback received no text.")
@@ -126,70 +135,62 @@ final class TriggerController {
                 presentCaptureFailure("The selection is too long (\(cap.text.count) characters; maximum \(maximumInputCharacters)).")
                 return
             }
-            presentRead(text: cap.text, element: cap.element, range: cap.range,
-                        targetOverride: targetOverride(for: action))
+            presentRead(text: cap.text, element: cap.element, range: cap.range, profile: profile, action: action)
         }
     }
 
     private func presentCaptureFailure(_ message: String) {
         let mouse = NSEvent.mouseLocation
         let anchor = NSRect(x: mouse.x, y: mouse.y, width: 1, height: 1)
-        let model = PopupController.shared.show(original: "No selection", target: nativeLanguage,
+        let model = PopupController.shared.show(original: "No selection", target: LanguageConfig.sourceLanguage,
                                                 anchor: anchor, onReplace: nil)
         model.failTranslation(message)
     }
 
-    /// 显示读翻译弹窗并流式填充（供快捷键 / 图标 / 自动模式共用）。
-    func presentRead(text: String, element: AXUIElement?, range: CFRange?, targetOverride: Language? = nil,
-                     dismissOnInteraction: Bool = true) {
+    /// 显示读翻译弹窗并流式填充（供快捷键 / 图标 / 自动模式共用）。`profile` nil = the profile bound
+    /// to the selection trigger.
+    func presentRead(text: String, element: AXUIElement?, range: CFRange?, dismissOnInteraction: Bool = true,
+                     profile: TranslationProfile? = nil, action: ShortcutAction = .smartPopup) {
+        guard let profile = profile ?? boundProfile(.selection) else {
+            presentCaptureFailure(Self.noProfileMessage)
+            return
+        }
         let anchor = PopupPositioner.anchorRect(element: element, range: range)
-        let dir = targetOverride.map { (from: Language.detect(in: text), to: $0) }
-            ?? resolveDirection(text: text, mode: AppSettings.readDirection, isWrite: false)
-        let model = PopupController.shared.show(original: text, target: dir.to, anchor: anchor,
+        let route = ProfileExecution.route(for: profile, action: action, text: text)
+        let model = PopupController.shared.show(original: text, target: route.target, anchor: anchor,
                                                 onReplace: nil, dismissOnInteraction: dismissOnInteraction)
         model.onDismiss = { [weak self] in self?.streamTask?.cancel() }
         model.onReplace = { [weak model] in
-            guard let model, !model.translation.isEmpty else { return }
+            guard let model, let delivered = ProfileExecution.deliveredOutput(for: profile, raw: model.translation) else { return }
+            let replacement = ProfileExecution.replacementText(delivered, source: text)
             Task { @MainActor in
                 PopupController.shared.close()
-                await TextReplacer.replace(with: model.translation, selectAll: false)
+                await TextReplacer.replace(with: replacement, selectAll: false)
             }
         }
         model.onRetarget = { [weak self, weak model] newTarget in
             guard let self, let model else { return }
             model.targetLanguage = newTarget
-            self.runTranslationStream(text: text, from: dir.from, to: newTarget,
-                                      style: .faithful, into: model)
+            self.runTranslationStream(text: text, profile: profile,
+                                      route: TranslationRoute(source: route.source, target: newTarget), into: model)
         }
-        runTranslationStream(text: text, from: dir.from, to: dir.to,
-                             style: .faithful, into: model)
+        runTranslationStream(text: text, profile: profile, route: route, into: model)
     }
 
-    // MARK: - 方向决策与共用流式
-
-    /// 按模式决定 from/to。
-    /// - auto：检测选中文字语言；母语→外语、外语→母语、第三种/检测不确定→（读:母语 / 写:外语）。
-    /// - 固定模式：跳过检测，直接用配置好的方向（对中英混排等检测易错场景更稳）。
-    private func resolveDirection(text: String, mode: TranslationDirection, isWrite: Bool) -> (from: Language?, to: Language) {
-        let route = TranslationRouting.resolve(
-            text: text, mode: mode, isWrite: isWrite,
-            native: nativeLanguage, foreign: foreignLanguage
-        )
-        return (route.source, route.target)
-    }
+    // MARK: - 共用流式
 
     /// 共用的流式翻译，把结果写入弹窗 model（读 / 改写预览 / 弹窗重定向复用）。
-    private func runTranslationStream(text: String, from: Language?, to: Language,
-                                      style: RewriteStyle, into model: TranslationPopupModel) {
+    private func runTranslationStream(text: String, profile: TranslationProfile, route: TranslationRoute,
+                                      into model: TranslationPopupModel) {
         streamTask?.cancel()
         model.onRetry = { [weak self, weak model] in
             guard let self, let model else { return }
-            self.runTranslationStream(text: text, from: from, to: to, style: style, into: model)
+            self.runTranslationStream(text: text, profile: profile, route: route, into: model)
         }
         model.resetTranslation()
         streamTask = Task { @MainActor in
             do {
-                for try await delta in TranslationService.shared.stream(text: text, from: from, to: to, style: style) {
+                for try await delta in TranslationService.shared.stream(text: text, profile: profile, route: route) {
                     if Task.isCancelled { return }
                     model.appendTranslation(delta)
                 }
@@ -208,13 +209,20 @@ final class TriggerController {
 
     // MARK: - 写·输入改写
 
-    func handleRewrite(action: ShortcutAction = .smartReplace) {
+    func handleRewrite(entry: ProfileEntry = .shortcut2, action: ShortcutAction = .smartReplace) {
         guard AppSettings.isEnabled else { return }
         guard AccessibilityPermission.isGranted else {
             AccessibilityPermission.request()
             return
         }
         guard !AppSettings.shouldSkipFrontmostApplication() else { return }
+        guard let profile = boundProfile(entry) else {
+            presentCaptureFailure(Self.noProfileMessage)
+            return
+        }
+        // An unencrypted network reply is never pasted unseen: Replace then always previews.
+        let preview = AppSettings.rewritePreview ||
+            ProfileExecution.requiresPreview(profile, ollamaHost: AppSettings.ollamaHost)
         rewriteTask?.cancel()
         rewriteRequestID &+= 1
         let requestID = rewriteRequestID
@@ -229,42 +237,43 @@ final class TriggerController {
                 presentCaptureFailure("The text is too long (\(cap.text.count) characters; maximum \(maximumInputCharacters)).")
                 return
             }
-            let style = AppSettings.rewriteStyle
-            let dir = targetOverride(for: action).map { (from: Language.detect(in: cap.text), to: $0) }
-                ?? resolveDirection(text: cap.text, mode: AppSettings.rewriteDirection, isWrite: true)
+            let route = ProfileExecution.route(for: profile, action: action, text: cap.text)
 
-            if AppSettings.rewritePreview {
+            if preview {
                 guard isCurrentRewrite(requestID) else { return }
                 // 先预览：弹窗显示译文 + Replace 按钮（顶部可改目标语言）
                 let anchor = PopupPositioner.anchorRect(element: cap.element, range: cap.selectedRange)
-                let model = PopupController.shared.show(original: cap.text, target: dir.to, anchor: anchor, onReplace: nil)
+                let model = PopupController.shared.show(original: cap.text, target: route.target, anchor: anchor, onReplace: nil)
                 model.onDismiss = { [weak self] in self?.streamTask?.cancel() }
                 model.onReplace = { [weak self, weak model] in
-                    guard let self, self.isCurrentRewrite(requestID),
-                          let model, !model.translation.isEmpty else { return }
+                    guard let self, self.isCurrentRewrite(requestID), let model,
+                          let delivered = ProfileExecution.deliveredOutput(for: profile, raw: model.translation) else { return }
+                    let replacement = ProfileExecution.replacementText(delivered, source: cap.text)
                     Task { @MainActor in
                         guard self.isCurrentRewrite(requestID) else { return }
                         PopupController.shared.close()
-                        await TextReplacer.replace(with: model.translation, selectAll: cap.isWholeField)
+                        await TextReplacer.replace(with: replacement, selectAll: cap.isWholeField)
                     }
                 }
                 model.onRetarget = { [weak self, weak model] newTarget in
                     guard let self, let model else { return }
                     model.targetLanguage = newTarget
-                    self.runTranslationStream(text: cap.text, from: dir.from, to: newTarget, style: style, into: model)
+                    self.runTranslationStream(text: cap.text, profile: profile,
+                                              route: TranslationRoute(source: route.source, target: newTarget), into: model)
                 }
-                runTranslationStream(text: cap.text, from: dir.from, to: dir.to, style: style, into: model)
+                runTranslationStream(text: cap.text, profile: profile, route: route, into: model)
             } else {
                 // 直接替换
                 do {
                     let translated = try await TranslationService.shared.translateFully(
-                        text: cap.text, from: dir.from, to: dir.to, style: style)
+                        text: cap.text, profile: profile, route: route)
                     guard isCurrentRewrite(requestID) else { return }
-                    await TextReplacer.replace(with: translated, selectAll: cap.isWholeField)
+                    await TextReplacer.replace(with: ProfileExecution.replacementText(translated, source: cap.text),
+                                               selectAll: cap.isWholeField)
                 } catch {
                     guard isCurrentRewrite(requestID) else { return }
                     let anchor = PopupPositioner.anchorRect(element: cap.element, range: cap.selectedRange)
-                    let model = PopupController.shared.show(original: cap.text, target: dir.to, anchor: anchor, onReplace: nil)
+                    let model = PopupController.shared.show(original: cap.text, target: route.target, anchor: anchor, onReplace: nil)
                     model.failTranslation((error as? TranslationError)?.errorDescription ?? error.localizedDescription)
                 }
             }
@@ -273,13 +282,5 @@ final class TriggerController {
 
     private func isCurrentRewrite(_ requestID: UInt64) -> Bool {
         requestID == rewriteRequestID && !Task.isCancelled
-    }
-
-    private func targetOverride(for action: ShortcutAction) -> Language? {
-        switch action {
-        case .nativePopup, .nativeReplace: return nativeLanguage
-        case .foreignPopup, .foreignReplace: return foreignLanguage
-        case .smartPopup, .smartReplace: return nil
-        }
     }
 }

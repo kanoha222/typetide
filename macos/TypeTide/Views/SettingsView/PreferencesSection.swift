@@ -7,6 +7,7 @@ import SwiftUI
 
 enum PreferencesSection: String, CaseIterable, Identifiable {
     case general = "General"
+    case profiles = "Profiles"
     case behavior = "Behavior"
     case backend = "Backend"
     case language = "Language"
@@ -20,6 +21,7 @@ enum PreferencesSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape.fill"
+        case .profiles: return "slider.horizontal.3"
         case .behavior: return "wand.and.stars"
         case .backend: return "server.rack"
         case .language: return "globe"
@@ -34,6 +36,7 @@ enum PreferencesSection: String, CaseIterable, Identifiable {
     var tint: Color {
         switch self {
         case .general: return .blue
+        case .profiles: return .orange
         case .behavior: return .purple
         case .backend: return .teal
         case .language: return .green

@@ -13,7 +13,7 @@ bundled llama.cpp CPU runtime powers the built-in model. No Electron.
 | Selection capture | AX API → clipboard fallback | UI Automation TextPattern → clipboard fallback |
 | Undo-safe replace | synthetic ⌘V | synthetic Ctrl+V |
 | Backends | Built-in TranslateGemma · Ollama · OpenAI-compatible | same |
-| Ollama model picker / auto-resolve | ✅ | ✅ (dropdown from /api/tags; invalid model auto-replaced at startup) |
+| Ollama model picker / auto-resolve | ✅ | ✅ (installed list from /api/tags; models are set per profile, and a missing one is flagged, never replaced) |
 | Floating icon / auto-translate on select | ✅ | ✅ (low-level mouse hook) |
 | Retarget language in popup | ✅ | ✅ |
 | Styles (Faithful/Formal/Casual/Polished) | ✅ | ✅ |
@@ -35,14 +35,19 @@ write `debug.log` beside it).
 Cloud API presets are available for OpenAI, OpenRouter, and DeepSeek, alongside
 any custom OpenAI-compatible `/chat/completions` endpoint. In normal use the API
 key is stored in Windows Credential Manager; it is never written back to
-`settings.json`. Ollama models are preloaded at startup and kept warm for 10
-minutes to avoid cold-start delays.
+`settings.json`. The installed Ollama models that the shortcuts and the selection
+trigger are bound to are preloaded at startup and kept warm for 10 minutes to
+avoid cold-start delays.
 
 The shortcut editor supports Ctrl, Shift, Alt, and the Windows key. Each of the
 two shortcuts independently chooses smart/native/foreign direction and popup or
 in-place replacement. Either shortcut can be cleared; keep at least one configured
-for keyboard triggering. The Ollama picker also recommends an installed model size
-from the machine's physical memory; it never downloads or changes models by itself.
+for keyboard triggering. Language pair, direction, style or custom system prompt,
+backend and model belong to named translation profiles (Settings → Translation →
+Manage profiles); Shortcut 1, Shortcut 2 and the selection trigger each run the
+profile bound to them. Settings → Translation also recommends an installed Ollama
+model size from the machine's physical memory; it never downloads or changes models
+by itself.
 
 ## Build
 

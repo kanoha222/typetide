@@ -31,10 +31,12 @@ class SystemServiceProvider: NSObject {
 
     // MARK: - Helper
 
+    /// Runs the profile bound to Selection, into its foreign language.
     private func translate(_ text: String) async -> String {
+        guard let profile = ProfileStore.shared.configuration.profile(for: .selection) else { return text }
         do {
-            return try await TranslationService.shared.translateFully(
-                text: text, from: nil, to: LanguageConfig.targetLanguage)
+            let route = ProfileExecution.route(for: profile, action: .foreignPopup, text: text)
+            return try await TranslationService.shared.translateFully(text: text, profile: profile, route: route)
         } catch {
             return text
         }

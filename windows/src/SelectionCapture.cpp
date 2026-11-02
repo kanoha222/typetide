@@ -139,10 +139,28 @@ RECT CursorAnchor() {
     return RECT{p.x, p.y - 4, p.x + 1, p.y + 14};
 }
 
+HWND FocusedControl(HWND foreground) {
+    if (!foreground) return nullptr;
+    GUITHREADINFO info{sizeof(info)};
+    const DWORD thread = GetWindowThreadProcessId(foreground, nullptr);
+    if (!thread || !GetGUIThreadInfo(thread, &info)) return nullptr;
+    return info.hwndFocus;
+}
+
+namespace {
+/// The paste target of a capture: the foreground window and its focused control, now.
+void stampTarget(Capture& cap) {
+    cap.window = GetForegroundWindow();
+    cap.focus = FocusedControl(cap.window);
+}
+} // namespace
+
 std::optional<Capture> UIASelectionOnly() {
     ComPtr<IUIAutomationElement> el = focusedElement();
     if (!el) return std::nullopt;
-    return uiaSelection(el.Get());
+    auto cap = uiaSelection(el.Get());
+    if (cap) stampTarget(*cap);
+    return cap;
 }
 
 std::optional<Capture> UIAReadSelection() {
@@ -151,6 +169,7 @@ std::optional<Capture> UIAReadSelection() {
     if (!el) return std::nullopt;
     auto cap = uiaSelection(el.Get());
     util::Log("UIAReadSelection uia=%d", cap.has_value());
+    if (cap) stampTarget(*cap);
     return cap;
 }
 
@@ -158,20 +177,30 @@ std::optional<Capture> UIACaptureForRewrite() {
     ComPtr<IUIAutomationElement> el = focusedElement();
     if (!el) return std::nullopt;
     // 有选区 → 只改选区
-    if (auto cap = uiaSelection(el.Get())) return cap;
+    if (auto cap = uiaSelection(el.Get())) {
+        stampTarget(*cap);
+        return cap;
+    }
     // 无选区 → 改整个输入框
     if (auto value = uiaWholeValue(el.Get())) {
         Capture cap;
         cap.text = *value;
         cap.isWholeField = true;
         cap.hasAnchor = elementRect(el.Get(), &cap.anchor);
+        stampTarget(cap);
         return cap;
     }
     return std::nullopt;
 }
 
-std::optional<std::wstring> ClipboardFallbackCopy() {
+std::optional<std::wstring> ClipboardFallbackCopy(HWND target) {
+    std::lock_guard transaction(clipboard::TransactionMutex());  // never overlaps a paste replace
+    if (!target || GetForegroundWindow() != target) {
+        util::Log("ClipboardFallbackCopy skipped: no foreground window, or it changed while waiting");
+        return std::nullopt;
+    }
     clipboard::Snapshot saved = clipboard::Take();
+    if (!saved.readable) return std::nullopt;  // Ctrl+C now could not be undone afterwards
     DWORD before = clipboard::SequenceNumber();
 
     keyboard::SendCopy();

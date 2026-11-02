@@ -2,17 +2,24 @@
 #include "Http.h"
 #include "Json.h"
 #include "Settings.h"
+#include "TranslationExecution.h"
 #include "Util.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cwchar>
 #include <cwctype>
+#include <initializer_list>
 #include <limits>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace ollamamodels {
 
 namespace {
+std::atomic<uint64_t> g_preloadGeneration{0};
+
 double parameterBillions(const std::wstring& model) {
     std::wstring lower = util::ToLower(model);
     size_t b = lower.find(L'b');
@@ -31,9 +38,12 @@ double parameterBillions(const std::wstring& model) {
 } // namespace
 
 std::vector<std::wstring> ListInstalled(const std::string& host, int port, std::wstring* error) {
-    std::wstring url = util::Widen(host) + L":" + std::to_wstring(port) + L"/api/tags";
-
-    http::Result r = http::Get(url);
+    const std::optional<std::wstring> base = execution::OllamaBase(host, port);
+    if (!base) {
+        if (error) *error = L"Invalid Ollama host. Use http(s)://host only and set the port separately.";
+        return {};
+    }
+    http::Result r = http::Get(*base + L"/api/tags", L"", /*followRedirects=*/false);
     if (!r.ok) {
         if (error)
             *error = r.status == 0 ? L"Can't reach Ollama — is `ollama serve` running?"
@@ -53,63 +63,59 @@ std::vector<std::wstring> ListInstalled(const std::string& host, int port, std::
     return models;
 }
 
-void FetchInstalledAsync(HWND notify, UINT message) {
-    // Settings 快照在调用（主）线程拍好，工作线程只碰局部拷贝
-    const Settings& s = Settings::shared();
-    std::string host = s.ollamaHost;
-    int port = s.ollamaPort;
+void FetchInstalledAsync(HWND notify, UINT message, profilestatus::Ticket ticket) {
+    // 已提交 Settings 的快照在调用（主）线程拍好，工作线程只碰局部拷贝
+    const SettingsSnapshot snapshot = Settings::shared().snapshot();
+    std::string host = snapshot.ollamaHost;
+    int port = snapshot.ollamaPort;
 
-    std::thread([notify, message, host, port] {
-        auto* models = new std::vector<std::wstring>(ListInstalled(host, port, nullptr));
-        if (!PostMessageW(notify, message, 0, (LPARAM)models)) delete models;
+    std::thread([notify, message, ticket, host, port] {
+        auto* discovery = new Discovery;
+        discovery->ticket = ticket;
+        discovery->models = ListInstalled(host, port, &discovery->error);
+        discovery->ok = discovery->error.empty();
+        if (!PostMessageW(notify, message, 0, (LPARAM)discovery)) delete discovery;
     }).detach();
 }
 
-void PreloadAsync() {
-    const Settings& s = Settings::shared();
-    if (s.backend != TranslationBackend::Ollama || s.ollamaModel.empty()) return;
-    const std::string host = s.ollamaHost;
-    const int port = s.ollamaPort;
-    const std::string model = s.ollamaModel;
+void PreloadAsync(const std::vector<std::wstring>* installed) {
+    // Only models that committed profiles actually bind, each once; never the whole library and
+    // never a substitute for a missing model.
+    const uint64_t mine = ++g_preloadGeneration;
+    const SettingsSnapshot snapshot = Settings::shared().snapshot();
+    const std::vector<std::string> models = profilestatus::PreloadModels(snapshot.profileConfig, installed);
+    const std::optional<std::wstring> base = execution::OllamaBase(snapshot.ollamaHost, snapshot.ollamaPort);
+    if (models.empty() || !base) return;
+    const std::wstring url = *base + L"/api/generate";
 
-    std::thread([host, port, model] {
-        json::Object body;
-        body["model"] = model;
-        body["prompt"] = "";
-        body["stream"] = false;
-        body["keep_alive"] = "10m";
-        body["think"] = false;
-        std::atomic<bool> cancel{false};
-        const std::wstring url = util::Widen(host) + L":" + std::to_wstring(port) + L"/api/generate";
-        http::Result r = http::PostStream(url, json::Value(std::move(body)).dump(), L"",
-                                          [](const char*, size_t) {}, cancel);
-        if (!r.ok) util::Log("ollama preload failed: %s", r.error.c_str());
+    std::thread([url, models, mine] {
+        for (const std::string& model : models) {
+            if (g_preloadGeneration.load() != mine) return;  // bindings or connection changed since
+            for (const bool think : {true, false}) {  // models that reject "think" answer HTTP 400
+                json::Object body;
+                body["model"] = model;
+                body["prompt"] = "";
+                body["stream"] = false;
+                body["keep_alive"] = "10m";
+                if (think) body["think"] = false;
+                std::atomic<bool> cancel{false};
+                http::Result r = http::PostStream(url, json::Value(std::move(body)).dump(), L"",
+                                                  [](const char*, size_t) {}, cancel);
+                if (r.ok || r.status != 400 || !think) {
+                    if (!r.ok) util::Log("ollama preload failed: %s", r.error.c_str());
+                    break;
+                }
+            }
+        }
     }).detach();
 }
 
-bool ApplyResolvedModels(const std::vector<std::wstring>& installed) {
-    Settings& s = Settings::shared();
-    if (s.backend != TranslationBackend::Ollama || installed.empty()) return false;
-
-    std::wstring configured = util::Widen(s.ollamaModel);
-    // "qwen2.5:3b" 与 ":latest" 变体宽松匹配
-    auto matches = [&](const std::wstring& m) {
-        return m == configured || m == configured + L":latest";
-    };
-    if (std::any_of(installed.begin(), installed.end(), matches)) return false;
-
-    util::Log("ollama model '%s' not installed, switching to '%s'",
-              s.ollamaModel.c_str(), util::Narrow(installed[0]).c_str());
-    s.ollamaModel = util::Narrow(installed[0]);
-    s.save();
-    return true;
+void CancelPreload() {
+    ++g_preloadGeneration;
 }
 
-bool EnsureValidDefault() {
-    const Settings& s = Settings::shared();
-    if (s.backend != TranslationBackend::Ollama) return false;
-    std::wstring error;
-    return ApplyResolvedModels(ListInstalled(s.ollamaHost, s.ollamaPort, &error));
+void OnDiscovered(const std::vector<std::wstring>& installed) {
+    PreloadAsync(&installed);
 }
 
 std::wstring RecommendedForMemory(const std::vector<std::wstring>& installed,

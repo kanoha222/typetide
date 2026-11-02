@@ -16,6 +16,22 @@ private struct MockStreamingProvider: TranslationProvider {
     }
 }
 
+/// A custom profile: its rendered system prompt arrives, the text is unchanged, the reply keeps
+/// indentation, a tab and a trailing line break.
+private struct CustomPromptProvider: TranslationProvider {
+    let id = "e2e-custom"
+
+    func stream(_ request: TranslationRequest) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            XCTAssertEqual(request.systemPrompt, "Into English, please.")
+            XCTAssertEqual(request.text, "你好世界")
+            continuation.yield("  CUSTOM_")
+            continuation.yield("OUTPUT\n\tline 2\n")
+            continuation.finish()
+        }
+    }
+}
+
 @MainActor
 final class SelectionTranslationReplacementE2ETests: XCTestCase {
     override func tearDown() async throws {
@@ -59,6 +75,35 @@ final class SelectionTranslationReplacementE2ETests: XCTestCase {
 
         XCTAssertEqual(editor.string, "前缀 MOCK_TRANSLATION_OK 后缀")
         XCTAssertFalse(PopupController.shared.isVisible)
+    }
+
+    func testCustomProfilePopupShowsExactOutputAndReplaceDropsTheTrailingLineBreak() async throws {
+        let editor = NSTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 180))
+        editor.string = "前缀 你好世界 后缀"
+        editor.setSelectedRange((editor.string as NSString).range(of: "你好世界"))
+
+        TranslationService.shared.providerOverride = CustomPromptProvider()
+        TextReplacer.replacementOverride = { [weak editor] replacement, selectAll in
+            guard let editor else { return }
+            if selectAll { editor.selectAll(nil) }
+            editor.insertText(replacement, replacementRange: editor.selectedRange())
+        }
+        let custom = TranslationProfile(id: "e2e-custom", name: "E2E custom", nativeLanguage: .chinese,
+                                        foreignLanguage: .english, direction: .auto, promptMode: .custom,
+                                        presetStyle: .faithful, systemPrompt: "Into {{target_language}}, please.",
+                                        backend: .ollama, model: "e2e-model")
+
+        TriggerController.shared.presentRead(text: "你好世界", element: nil, range: nil,
+                                             dismissOnInteraction: false, profile: custom)
+
+        let model = try XCTUnwrap(PopupController.shared.currentModel)
+        try await waitUntil("exact custom output") { model.translation == "  CUSTOM_OUTPUT\n\tline 2\n" }
+        try await waitUntil("completion animation") { model.tidePhase == .complete }
+
+        model.onReplace?()
+        try await waitUntil("editor replacement") { editor.string.contains("CUSTOM_OUTPUT") }
+        XCTAssertEqual(editor.string, "前缀   CUSTOM_OUTPUT\n\tline 2 后缀",
+                       "Replace keeps indentation and the tab but drops the trailing line break")
     }
 
     private func waitUntil(_ state: String, timeout: Duration = .seconds(5),

@@ -33,7 +33,9 @@ Temporary target selection changes only the operation's target and rerenders its
 
 Custom replaces the entire system prompt: append no default translation/style/output constraints. Replace only `{{source_language}}` and `{{target_language}}`, case-sensitively, in one pass; never execute code, recursively render, insert selected text into system, or substitute inside user text. Use `lang::PromptName()` for known languages, including third languages; use `auto-detected language` for an unknown source while retaining `nullopt`. Unknown `{{...}}` tokens stay literal with a non-blocking warning.
 
-Reject whitespace-only custom prompts without changing their saved whitespace/Unicode. Use Trim solely to detect an empty response; preserve exact nonblank output in streaming, cache, retry, popup Replace, and direct replacement, including indentation, tabs, and trailing newlines.
+Reject whitespace-only custom prompts without changing their saved whitespace/Unicode. Use Trim solely to detect an empty response; preserve exact nonblank output in streaming, cache, retry and the popup (display and Copy), including indentation, tabs, and trailing newlines. **Amended by user decision (2026-10-29, final security review):** popup Replace and direct replacement paste that text without trailing line breaks unless the replaced selection itself ended with one (`execution::ReplacementText`), so a pasted line is never also "entered" — a terminal would run it. Indentation, tabs and inner line breaks are kept.
+
+**Remote plain-HTTP Ollama (user decision, 2026-10-29):** still allowed, but shown as "network, unencrypted" in Settings and the profile editor, and Replace actions from such a profile always show the popup first (`profilestatus::RequiresPreview`), because the reply could be altered in transit before it would be pasted into the user's app. Ollama over HTTPS and local routes keep the configured preview setting.
 
 ## Sessions and replacement
 

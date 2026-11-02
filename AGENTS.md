@@ -20,16 +20,18 @@ Shortcut / SelectionMonitor ─► SelectionCapture ─► TranslationService �
 
 Backends: macOS defaults to built-in MLX / TranslateGemma 4B (Apple Silicon, one-time model download). Ollama (`http://127.0.0.1:11434`) remains selectable on both platforms, as does any OpenAI-compatible
 endpoint (`/chat/completions`, SSE streaming). 10 languages, native/foreign
-pair, per-shortcut direction (auto-detect or fixed), 4 rewrite styles.
+pair, per-shortcut direction (auto-detect or fixed), 4 rewrite styles. Both apps keep these choices — or a custom
+system prompt — plus backend and model in named translation profiles bound to Shortcut 1, Shortcut 2 and the
+selection trigger (macOS `Config/TranslationProfile.swift` + `ProfileStore`, Windows `src/TranslationProfile.*`).
 
 ## macOS (`macos/`)
 
 - `Core/` — `SelectionCapture` (AX `kAXSelectedText` + synthetic-⌘C fallback, restores clipboard), `TextReplacer` (synthetic paste, undo-safe), `TriggerController` (orchestrates read/write), `SelectionMonitor` (global mouse-up → AX selection), `PopupPositioner`, `Keyboard`, `Pasteboard`, `AccessibilityPermission`, `LaunchAtLogin`.
-- `Translation/` — `TranslationProvider` protocol; `LocalTranslationProvider` (MLX, faithful translation), `BuiltInModelManager` (pinned and verified downloads), `OllamaProvider`, `OpenAIProvider` (SSE); `TranslationService` (routing + cache + style); `TranslationCache`; `OllamaModelResolver` (auto-pick installed model).
+- `Translation/` — `TranslationProvider` protocol; `LocalTranslationProvider` (MLX, faithful translation), `BuiltInModelManager` (pinned and verified downloads), `OllamaProvider`, `OpenAIProvider` (SSE); `TranslationService` (runs a profile: provider, cache, exact custom output); `ProfileExecution` (route, custom prompt rendering, replacement text); `TranslationCache`; `OllamaModelResolver` (installed list, recommendation, preload of bound installed models — a missing model is flagged, never replaced).
 - `UI/` — `TranslationPopupView` + `PopupController`, `SelectionIconWindow`.
 - `Config/` — `AppSettings` (single source of truth, UserDefaults-backed), `LanguageConfig`.
 - `Services/` — `GlobalShortcutCenter` (Carbon, multi-hotkey), `UpdateChecker`, `SystemServiceProvider`.
-- `Views/` — `MenuBarView`, `SettingsView/*` (General, Behavior, Backend, Language, Models, Shortcuts, Skip Apps, About).
+- `Views/` — `MenuBarView` (incl. profile binding submenus), `SettingsView/*` (General, Profiles, Behavior, Backend, Language, Shortcuts, Skip Apps, Diagnostics, About).
 
 ### Conventions & gotchas
 
@@ -56,11 +58,11 @@ dependencies (tiny JSON parser included in `src/Json.h`).
 - `src/SelectionCapture.*` — UI Automation TextPattern selection + synthetic Ctrl+C clipboard fallback (clipboard always restored); also returns the selection's screen rect for popup anchoring.
 - `src/TextReplacer.*` — synthetic Ctrl+V paste (undo-safe), clipboard restored after.
 - `src/Translator.*` — provider interface; Ollama NDJSON + OpenAI SSE streaming over WinHTTP; in-memory LRU cache. Ollama requests send `"think": false` (retry without on 400) — thinking models (qwen3 family) otherwise stall for minutes on hidden reasoning.
-- `src/OllamaModels.*` — `/api/tags` model list (settings dropdown) + auto-replace an uninstalled configured model at startup.
+- `src/OllamaModels.*` — `/api/tags` model list (Settings summary) + preload of the bound, installed models; a missing model is only flagged (`src/ProfileStatus.*`), never replaced.
 - `src/Language.*` — 10 languages, prompts, detection (script ranges + Latin stopword scoring).
 - `src/PopupWindow.*` — streaming translation popup (Copy / Replace, Esc / click-outside dismiss).
 - `src/SelectionIcon.*` / `src/SelectionMonitor.*` — floating icon & auto-translate triggers (WH_MOUSE_LL).
-- `src/SettingsWindow.*` — native settings dialog (tabs: General, Backend, Language, Shortcuts, Behavior, About).
+- `src/SettingsWindow.*` — native settings dialog (tabs: General, Translation, Languages, Shortcuts, Behavior, Excluded apps, Diagnostics, About). Translation/Languages summarize the bound profiles and keep the shared connection settings; profiles are edited in `src/TranslationProfilesWindow.*`.
 - `src/Settings.*` — JSON settings at `%APPDATA%\TypeTide\settings.json`.
 - `src/TrayIcon.*`, `src/Hotkeys.*`, `src/LaunchAtLogin.*` (HKCU Run key), `src/UpdateChecker.*`.
 

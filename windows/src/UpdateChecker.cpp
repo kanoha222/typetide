@@ -1,6 +1,7 @@
 #include "UpdateChecker.h"
 #include "Http.h"
 #include "Json.h"
+#include "ProfileBinding.h"
 #include "Settings.h"
 #include "Util.h"
 #include <shellapi.h>
@@ -86,8 +87,8 @@ void CheckIfDue(HWND notifyWindow, UINT notifyMessage) {
     Settings& s = Settings::shared();
     long long now = (long long)time(nullptr);
     if (now - s.lastUpdateCheck < 24 * 3600) return;
-    s.lastUpdateCheck = now;
-    s.save();
+    // Saved on its own: never together with any other unsaved change.
+    profilebinding::CommitChange(s, [now](SettingsData& d) { d.lastUpdateCheck = now; }, nullptr);
     CheckNow(notifyWindow, notifyMessage);
 }
 

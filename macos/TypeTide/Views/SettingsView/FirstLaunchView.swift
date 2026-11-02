@@ -4,7 +4,7 @@ struct FirstLaunchView: View {
     let openSection: (PreferencesSection) -> Void
     let finish: () -> Void
 
-    @AppStorage(AppSettings.Keys.backend) private var backendRaw = TranslationBackend.builtIn.rawValue
+    @ObservedObject private var profileStore = ProfileStore.shared
     @State private var hasPermission = AccessibilityPermission.isGranted
     @State private var backendResult: BackendHealthResult?
     @State private var isTestingBackend = false
@@ -58,14 +58,14 @@ struct FirstLaunchView: View {
                 setupRow(
                     step: 2,
                     title: "Translation backend",
-                    detail: backendResult?.message ?? "Download the built-in model below, or configure Ollama/API, then test with synthetic text.",
+                    detail: backendResult?.message ?? "Download the built-in model below, or configure Ollama/API for your profiles, then test the Shortcut 1 profile with synthetic text.",
                     ready: backendReady,
                     action: { Task { await testBackend() } },
                     actionLabel: isTestingBackend ? "Testing…" : "Test Connection"
                 )
                 .disabled(isTestingBackend)
 
-                if backendRaw == TranslationBackend.builtIn.rawValue {
+                if profileStore.configuration.profiles.contains(where: { $0.backend == .builtIn }) {
                     BuiltInModelSettingsView()
                 }
 
@@ -121,7 +121,7 @@ struct FirstLaunchView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             recheck()
         }
-        .onChange(of: backendRaw) { _, _ in backendResult = nil }
+        .onChange(of: profileStore.configuration) { _, _ in backendResult = nil }
     }
 
     private func setupRow(

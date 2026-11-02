@@ -20,7 +20,14 @@ struct Capture {
     /// 选区屏幕矩形（物理像素）；hasAnchor=false 时无效
     RECT anchor{};
     bool hasAnchor = false;
+    /// 取词时的前台窗口：替换只粘贴回它（换了前台窗口就放弃）
+    HWND window = nullptr;
+    /// 取词时该窗口里有焦点的控件：替换前再核对一次（同一窗口换了输入框也放弃）
+    HWND focus = nullptr;
 };
+
+/// The control that has the keyboard focus in `foreground`'s GUI thread (nullptr if unknown).
+HWND FocusedControl(HWND foreground);
 
 /// 读模式 UIA 取词（仅 UIA，不动剪贴板；主线程）。
 std::optional<Capture> UIAReadSelection();
@@ -32,7 +39,9 @@ std::optional<Capture> UIACaptureForRewrite();
 std::optional<Capture> UIASelectionOnly();
 
 /// 模拟 Ctrl+C 复制兜底，用后还原剪贴板（阻塞 ≤400ms，工作线程调用）。
-std::optional<std::wstring> ClipboardFallbackCopy();
+/// `target` 是触发时的前台窗口：若等剪贴板事务锁期间前台已换（例如前一次替换还在粘贴），
+/// 不发 Ctrl+C，返回 nullopt——绝不复制、也不替换另一个窗口的选区。
+std::optional<std::wstring> ClipboardFallbackCopy(HWND target);
 
 /// 兜底锚点：光标位置一小块矩形
 RECT CursorAnchor();

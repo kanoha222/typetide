@@ -2,7 +2,7 @@
 //  TranslationService.swift
 //  TypeTide
 //
-//  根据设置选择 provider，做缓存与流式输出。
+//  Runs a translation profile on its provider, with caching and streaming output.
 //
 
 import Foundation
@@ -17,26 +17,52 @@ final class TranslationService {
     var providerOverride: TranslationProvider?
 #endif
 
-    private func currentProvider() -> TranslationProvider {
+    /// The profile used outside a shortcut or the selection trigger (the connection test, the
+    /// Services menu): the Shortcut 1 profile, or the first profile.
+    var primaryProfile: TranslationProfile {
+        let configuration = ProfileStore.shared.configuration
+        return configuration.profile(for: .shortcut1) ?? configuration.profiles.first
+            ?? ProfileConfiguration.defaults.profiles[0]
+    }
+
+    func provider(for profile: TranslationProfile) -> TranslationProvider {
 #if DEBUG
         if let providerOverride { return providerOverride }
 #endif
-        switch AppSettings.backend {
+        switch profile.backend {
         case .builtIn: return LocalTranslationProvider()
-        case .ollama: return OllamaProvider()
-        case .openai: return OpenAIProvider()
+        case .ollama: return OllamaProvider(model: profile.model)
+        case .openai: return OpenAIProvider(model: profile.model)
         }
     }
 
-    /// 流式翻译。命中缓存时一次性 yield 全文；否则边流边累积，结束后写缓存。
+    /// The primary profile's backend and model with a preset `style` (connection test, Services menu).
     func stream(text: String, from: Language?, to: Language, style: RewriteStyle = .faithful) -> AsyncThrowingStream<String, Error> {
-        let provider = currentProvider()
-        let cacheKey = TranslationCache.shared.key(backend: provider.id, from: from, to: to, text: "\(style.rawValue)|\(text)")
+        stream(text: text, profile: Self.preset(primaryProfile, style: style), route: TranslationRoute(source: from, target: to))
+    }
+
+    /// Streams `profile` translating `text` along `route`. A cache hit yields the delivered text at
+    /// once. `useCache: false` (profile and connection tests) neither reads nor writes the cache.
+    func stream(text: String, profile: TranslationProfile, route: TranslationRoute,
+                useCache: Bool = true) -> AsyncThrowingStream<String, Error> {
+        let provider = self.provider(for: profile)
+        let systemPrompt = ProfileExecution.systemPrompt(for: profile, route: route)
+        let style: RewriteStyle = profile.promptMode == .preset ? profile.presetStyle : .faithful
+        let request = TranslationRequest(text: text, source: route.source, target: route.target, style: style,
+                                         systemPrompt: systemPrompt)
+        let cacheKey = TranslationCache.shared.key(
+            backend: provider.id, from: route.source, to: route.target,
+            text: Self.identity([Self.endpoint(of: profile), profile.model, profile.promptMode.rawValue,
+                                 style.rawValue, systemPrompt ?? "", text]))
         let characterCount = text.count
 
         return AsyncThrowingStream { continuation in
             let start = ContinuousClock.now
-            if let cached = TranslationCache.shared.value(for: cacheKey) {
+            if let problem = ProfileExecution.capabilityError(for: profile) {
+                continuation.finish(throwing: TranslationError.notConfigured(problem))
+                return
+            }
+            if useCache, let cached = TranslationCache.shared.value(for: cacheKey) {
                 continuation.yield(cached)
                 continuation.finish()
                 Self.recordTranslation(outcome: "cacheHit", provider: provider.id, start: start,
@@ -47,14 +73,16 @@ final class TranslationService {
                 var full = ""
                 var firstToken: ContinuousClock.Instant?
                 do {
-                    for try await delta in provider.stream(.init(text: text, source: from, target: to, style: style)) {
+                    for try await delta in provider.stream(request) {
                         if firstToken == nil { firstToken = .now }
                         full += delta
                         continuation.yield(delta)
                     }
-                    let cleaned = full.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !cleaned.isEmpty else { throw TranslationError.empty }
-                    TranslationCache.shared.set(cleaned, for: cacheKey)
+                    // Custom output is cached exactly; preset output keeps the legacy trim.
+                    guard let delivered = ProfileExecution.deliveredOutput(for: profile, raw: full) else {
+                        throw TranslationError.empty
+                    }
+                    if useCache { TranslationCache.shared.set(delivered, for: cacheKey) }
                     continuation.finish()
                     Self.recordTranslation(outcome: "success", provider: provider.id, start: start,
                                            firstToken: firstToken, characterCount: characterCount)
@@ -73,16 +101,45 @@ final class TranslationService {
         }
     }
 
-    /// 一次性翻译（用于改写：需要完整结果再替换）。
-    func translateFully(text: String, from: Language?, to: Language, style: RewriteStyle = .faithful) async throws -> String {
+    /// The whole delivered result (for replacement): never a partial or blank text.
+    func translateFully(text: String, profile: TranslationProfile, route: TranslationRoute,
+                        useCache: Bool = true) async throws -> String {
         var full = ""
-        for try await delta in stream(text: text, from: from, to: to, style: style) {
+        for try await delta in stream(text: text, profile: profile, route: route, useCache: useCache) {
             full += delta
         }
         try Task.checkCancellation()
-        let cleaned = full.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { throw TranslationError.empty }
-        return cleaned
+        guard let delivered = ProfileExecution.deliveredOutput(for: profile, raw: full) else {
+            throw TranslationError.empty
+        }
+        return delivered
+    }
+
+    /// The primary profile's backend and model with a preset `style`.
+    func translateFully(text: String, from: Language?, to: Language, style: RewriteStyle = .faithful) async throws -> String {
+        try await translateFully(text: text, profile: Self.preset(primaryProfile, style: style),
+                                 route: TranslationRoute(source: from, target: to))
+    }
+
+    private static func preset(_ profile: TranslationProfile, style: RewriteStyle) -> TranslationProfile {
+        var copy = profile
+        copy.promptMode = .preset
+        copy.presetStyle = style
+        return copy
+    }
+
+    /// Where the provider sends the text: a different endpoint never shares cached results.
+    private static func endpoint(of profile: TranslationProfile) -> String {
+        switch profile.backend {
+        case .builtIn: return "builtin"
+        case .ollama: return "\(AppSettings.ollamaHost):\(AppSettings.ollamaPort)"
+        case .openai: return AppSettings.openAIBaseURL
+        }
+    }
+
+    /// Length-prefixed fields, so no prompt or text can forge another identity.
+    private static func identity(_ fields: [String]) -> String {
+        fields.map { "\($0.utf8.count):\($0)" }.joined()
     }
 
     private static func recordTranslation(

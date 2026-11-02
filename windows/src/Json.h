@@ -75,4 +75,8 @@ Value Parse(const std::string& text, bool* ok = nullptr);
 /// 字符串转义（含引号）
 std::string Escape(const std::string& s);
 
+/// `text` with every invalid UTF-8 sequence replaced by U+FFFD (one per maximal invalid
+/// subpart), so one bad byte in a provider's stream line does not discard the whole line.
+std::string LossyUtf8(const std::string& text);
+
 } // namespace json

@@ -42,7 +42,7 @@ LRESULT CALLBACK PopupWindow::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 void PopupWindow::show(const std::wstring& original, Language target, RECT anchor, bool showReplace) {
-    close();
+    close(session::CloseReason::Superseded);
 
     original_ = original;
     translation_.clear();
@@ -97,14 +97,14 @@ void PopupWindow::show(const std::wstring& original, Language target, RECT ancho
     installDismissMonitors();
 }
 
-void PopupWindow::close() {
+void PopupWindow::close(session::CloseReason reason) {
     if (!hwnd_) return;
     KillTimer(hwnd_, kTideTimer);
     removeDismissMonitors();
     HWND h = hwnd_;
     hwnd_ = nullptr;
     DestroyWindow(h);
-    if (onClosed) onClosed();
+    if (onClosed) onClosed(reason);
 }
 
 void PopupWindow::appendDelta(const std::wstring& delta) {

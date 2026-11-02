@@ -72,11 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startTideDemoIfRequested()
 #endif
 
-        // 若配置的 Ollama 模型未安装，自动挑一个已装模型（避免开箱即败）
+        // 预热已绑定 profile 用到且已安装的 Ollama 模型；未安装的只在设置里提示，从不替换。
         Task { @MainActor in
-            if let model = await OllamaModelResolver.ensureValidDefault(), AppSettings.backend == .ollama {
-                await OllamaModelResolver.preload(model)
-            }
+            await OllamaModelResolver.preloadBoundModels()
         }
 
         // 首次启动：打开设置窗口，让用户立刻看到界面并完成配置
