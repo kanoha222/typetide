@@ -20,16 +20,18 @@ Shortcut / SelectionMonitor ─► SelectionCapture ─► TranslationService �
 
 Backends: macOS defaults to built-in MLX / TranslateGemma 4B (Apple Silicon, one-time model download). Ollama (`http://127.0.0.1:11434`) remains selectable on both platforms, as does any OpenAI-compatible
 endpoint (`/chat/completions`, SSE streaming). 10 languages, native/foreign
-pair, per-shortcut direction (auto-detect or fixed), 4 rewrite styles.
+pair, per-shortcut direction (auto-detect or fixed), 4 rewrite styles. Both apps keep these choices — or a custom
+system prompt — plus backend and model in named translation profiles bound to Shortcut 1, Shortcut 2 and the
+selection trigger (macOS `Config/TranslationProfile.swift` + `ProfileStore`, Windows `src/TranslationProfile.*`).
 
 ## macOS (`macos/`)
 
 - `Core/` — `SelectionCapture` (AX `kAXSelectedText` + synthetic-⌘C fallback, restores clipboard), `TextReplacer` (synthetic paste, undo-safe), `TriggerController` (orchestrates read/write), `SelectionMonitor` (global mouse-up → AX selection), `PopupPositioner`, `Keyboard`, `Pasteboard`, `AccessibilityPermission`, `LaunchAtLogin`.
-- `Translation/` — `TranslationProvider` protocol; `LocalTranslationProvider` (MLX, faithful translation), `BuiltInModelManager` (pinned and verified downloads), `OllamaProvider`, `OpenAIProvider` (SSE); `TranslationService` (routing + cache + style); `TranslationCache`; `OllamaModelResolver` (auto-pick installed model).
+- `Translation/` — `TranslationProvider` protocol; `LocalTranslationProvider` (MLX, faithful translation), `BuiltInModelManager` (pinned and verified downloads), `OllamaProvider`, `OpenAIProvider` (SSE); `TranslationService` (runs a profile: provider, cache, exact custom output); `ProfileExecution` (route, custom prompt rendering, replacement text); `TranslationCache`; `OllamaModelResolver` (installed list, recommendation, preload of bound installed models — a missing model is flagged, never replaced).
 - `UI/` — `TranslationPopupView` + `PopupController`, `SelectionIconWindow`.
 - `Config/` — `AppSettings` (single source of truth, UserDefaults-backed), `LanguageConfig`.
 - `Services/` — `GlobalShortcutCenter` (Carbon, multi-hotkey), `UpdateChecker`, `SystemServiceProvider`.
-- `Views/` — `MenuBarView`, `SettingsView/*` (General, Behavior, Backend, Language, Models, Shortcuts, Skip Apps, About).
+- `Views/` — `MenuBarView` (incl. profile binding submenus), `SettingsView/*` (General, Profiles, Behavior, Backend, Language, Shortcuts, Skip Apps, Diagnostics, About).
 
 ### Conventions & gotchas
 
