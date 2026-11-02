@@ -366,11 +366,22 @@ jobs:
               Tee-Object -FilePath "$env:EDITOR_LOG_DIR/build.log"
           exit $LASTEXITCODE
 
+      - name: Build the native UI Automation probe
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & cmake -S windows/tests -B "$env:EDITOR_BUILD_DIR-probe" -A x64 2>&1 |
+              Tee-Object -FilePath "$env:EDITOR_LOG_DIR/configure-probe.log"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & cmake --build "$env:EDITOR_BUILD_DIR-probe" --config Release --target AccessibilityProbe --parallel 2 2>&1 |
+              Tee-Object -FilePath "$env:EDITOR_LOG_DIR/build-probe.log"
+          exit $LASTEXITCODE
+
       - name: Drive the profile editor with window messages (failures are not masked)
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/scripts/test-profiles-e2e.ps1 `
-              -Exe "$env:EDITOR_BUILD_DIR/Release/TypeTide.exe" -DataDir "$env:EDITOR_DATA_DIR" 2>&1 |
+              -Exe "$env:EDITOR_BUILD_DIR/Release/TypeTide.exe" -DataDir "$env:EDITOR_DATA_DIR" `
+              -Probe "$env:EDITOR_BUILD_DIR-probe/Release/AccessibilityProbe.exe" 2>&1 |
               Tee-Object -FilePath "$env:EDITOR_LOG_DIR/editor-e2e.log"
           exit $LASTEXITCODE
 

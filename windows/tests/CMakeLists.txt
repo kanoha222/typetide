@@ -145,3 +145,12 @@ if(MSVC)
 endif()
 
 target_link_libraries(TranslationExecutionSelfTest PRIVATE winhttp)
+
+# Native UI Automation probe for the profile editor and Settings window end-to-end job.
+add_executable(AccessibilityProbe AccessibilityProbe.cpp)
+target_compile_features(AccessibilityProbe PRIVATE cxx_std_20)
+target_compile_definitions(AccessibilityProbe PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+if(MSVC)
+    target_compile_options(AccessibilityProbe PRIVATE /utf-8 /EHsc /W4)
+endif()
+target_link_libraries(AccessibilityProbe PRIVATE user32 ole32 oleaut32 uiautomationcore)

@@ -50,8 +50,8 @@ enum CtrlId : int {
     kTab = 1000,
     // General
     kEnable, kLogin, kVersionLabel, kCheckUpdate, kFirstRunHint,
-    // Translation: connections
-    kBuiltInDownload, kBuiltInStatus, kOllamaEndpoint, kOllamaRefresh, kOllamaHint,
+    // Translation: connections (fixed values the accessibility probe addresses directly)
+    kBuiltInDownload = 1921, kBuiltInStatus, kOllamaEndpoint, kOllamaRefresh, kOllamaHint,
     kOaiProviderLabel, kOaiProvider,
     kOaiUrlLabel, kOaiUrl, kOaiKeyLabel, kOaiKey, kOaiHint, kPrivacyHint,
     // Shortcuts

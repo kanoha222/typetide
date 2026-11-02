@@ -73,8 +73,8 @@ Documentation must finish before coding. Toolchain and runtime baseline confirma
 
 - [x] Run complete old/new `--selftest`, both provider mocks, and existing plus new Win32/WPF UIA E2E in isolated `TYPETIDE_DATA_DIR`; clean up fixtures/processes.
   - 最终 commit `8409040`（[run `40851727841`](https://github.com/kanoha222/typetide/actions/runs/40851727841)）：`--selftest`、`--selftest-runtime`（OpenAI + Ollama mock）、`test-e2e.ps1`（Win32/WinForms）、`test-e2e-wpf.ps1`（WPF，UIA 取词路径）、编辑器与触发路径端到端，全部在隔离数据目录中运行，测试结束时结束进程。说明：端到端由窗口消息与注入按键驱动，不是 UIA 客户端测试。
-- [ ] Compare exact custom output across streaming/cache/retry/preview Replace/direct replacement; verify all deterministic race and migration/storage tests.
-  - 本次补充：触发路径端到端加入 custom profile 的弹窗 Replace（弹窗逐字节显示，Replace 按用户决定去掉结尾换行），CI 待观察；流式与缓存的逐字节一致由 `--selftest-runtime` 验证，重试与改目标语言沿用同一冻结 context 与 Stream 路径。
+- [x] Compare exact custom output across streaming/cache/retry/preview Replace/direct replacement; verify all deterministic race and migration/storage tests.
+  - 触发路径端到端加入 custom profile 的弹窗 Replace（弹窗逐字节显示，Replace 按用户决定去掉结尾换行），在 commit `bbf341a` 通过（[run `41373889149`](https://github.com/kanoha222/typetide/actions/runs/41373889149)）；流式与缓存的逐字节一致由 `--selftest-runtime` 验证，重试与改目标语言沿用同一冻结 context 与 Stream 路径。
 - [x] Export real Debug + PDB Cobertura coverage with documented OpenCppCoverage arguments; validate the exported statistics. Reach ≥80% changed/new core line coverage, or report the shortfall/blocker without marking this item done.
   - 最终 commit `8409040`：[job `line-coverage`](https://github.com/kanoha222/typetide/actions/runs/40851727841/job/123372596312) 改动核心行 **2015/2275 = 88.6%**，导出的 Cobertura 由 `windows/scripts/coverage-report.py` 解析并按门槛决定 job 退出码，原始数据作为构件保留。
 - [x] Report full-project baseline and UI coverage separately; list every unexecuted check and environment limitation.

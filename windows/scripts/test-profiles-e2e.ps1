@@ -9,7 +9,8 @@
 # Exit codes: 0 = all checks passed, 1 = failures, 2 = test environment problem.
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
-    [Parameter(Mandatory = $true)][string]$DataDir
+    [Parameter(Mandatory = $true)][string]$DataDir,
+    [string]$Probe = ""  # AccessibilityProbe.exe: checks native UI Automation exposure when given
 )
 $ErrorActionPreference = "Stop"
 
@@ -142,6 +143,15 @@ function Choose-Custom($window) {
     return [bool](Wait-For { [W]::IsWindowEnabled((Control $window $IdPrompt)) })
 }
 
+# Native UI Automation check of the window `$mode` ('editor' or 'settings') of the running app.
+function Test-Accessibility([string]$mode) {
+    if (-not $Probe) { return }
+    $output = & $Probe $mode $script:app.Id 2>&1
+    $code = $LASTEXITCODE
+    $output | ForEach-Object { Write-Output "    $_" }
+    Check ($code -eq 0) "the $mode exposes every control to screen readers (native UI Automation)" "exit $code"
+}
+
 function Read-Settings {
     $path = Join-Path $DataDir 'settings.json'
     if (-not (Test-Path $path)) { return $null }
@@ -187,6 +197,7 @@ function Test-CreateAndSave($window) {
     Set-Text $window $IdName 'E2E profile & more'
     Check (Choose-Custom $window) "choosing a custom prompt enables the prompt editor"
     Set-Text $window $IdPrompt "Line 1`r`n`tLine 2  "
+    Test-Accessibility 'editor'  # custom-prompt mode: the prompt field is enabled
     Check ([bool](Wait-For { (Get-Text $window $IdPreview) -like '*Built-in*' })) `
         "the preview explains that a new Built-in profile cannot run a custom prompt"
     Click $window $IdSave
@@ -253,6 +264,7 @@ function Test-SettingsSummary {
     $settingsWindow = Start-App '--open-settings' 'TypeTideSettings'
     Check ($null -ne $settingsWindow) "the settings window opens"
     if (-not $settingsWindow) { return }
+    Test-Accessibility 'settings'  # also leaves the Translation page showing
     $json = Read-Settings
     $labels = @('Shortcut 1', 'Shortcut 2', 'Selection')
     for ($i = 0; $i -lt 3; $i++) {
