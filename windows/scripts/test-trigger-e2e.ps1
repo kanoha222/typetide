@@ -98,6 +98,7 @@ public static class T {
 $NUL = [NullString]::Value  # PowerShell marshals $null as "" for string parameters
 $VK_MENU = 0x12; $VK_CONTROL = 0x11; $VK_SHIFT = 0x10; $VK_ESCAPE = 0x1B; $VK_DOWN = 0x28; $VK_RIGHT = 0x27; $VK_RETURN = 0x0D
 $WM_SETTEXT = 0x000C; $WM_KEYDOWN = 0x0100; $WM_LBUTTONDOWN = 0x0201; $WM_LBUTTONUP = 0x0202; $WM_RBUTTONUP = 0x0205
+$WM_QUERYENDSESSION = 0x0011; $WM_ENDSESSION = 0x0016; $ENDSESSION_CLOSEAPP = 0x1
 $EM_SETSEL = 0x00B1; $MN_GETHMENU = 0x01E1; $WM_APP_TRAY = 0x8000 + 1
 $MF_BYPOSITION = 0x400; $MF_CHECKED = 0x8; $MF_HILITE = 0x80
 $MOUSEEVENTF_LEFTDOWN = 0x0002; $MOUSEEVENTF_LEFTUP = 0x0004; $IDOK = 1
@@ -516,6 +517,21 @@ function Test-LegacySmoke([string]$script) {
     Get-Process -Name TypeTide -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
+# What an installer's Restart Manager does to a running copy before replacing its files.
+function Test-CloseRequest {
+    Write-Output "[an installer's close request (Restart Manager)]"
+    Write-Settings 'p-popup' 'p-exact' 'smartPopup' 'smartReplace'
+    $window = Start-App
+    Check ($null -ne $window) "TypeTide starts before the close request"
+    if (-not $window) { return }
+    $agreed = [T]::SendMessageInt($window, $WM_QUERYENDSESSION, [IntPtr]::Zero, [IntPtr]$ENDSESSION_CLOSEAPP)
+    Check ($agreed -ne [IntPtr]::Zero) "TypeTide agrees to close"
+    [T]::PostMessageW($window, $WM_ENDSESSION, [IntPtr]1, [IntPtr]$ENDSESSION_CLOSEAPP) | Out-Null
+    $exited = $script:app.WaitForExit(10000)
+    Check $exited "TypeTide exits by itself, so setup can replace its files"
+    if ($exited) { $script:app = $null }
+}
+
 if (-not (Test-Path $Exe)) { Write-Output "missing executable: $Exe"; exit 2 }
 if ((Test-Path $DataDir) -and @(Get-ChildItem -Force $DataDir).Count -gt 0) {
     Write-Output "DataDir must be new or empty (refusing to touch existing data): $DataDir"
@@ -534,6 +550,7 @@ try {
     Test-SameAction
     Test-ClearedShortcutAndSelection
     Test-TrayBinding
+    Test-CloseRequest
 } finally {
     Stop-App
     if ($script:editHost) { Stop-Process -Id $script:editHost.Id -Force -ErrorAction SilentlyContinue }

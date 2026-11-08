@@ -6,7 +6,9 @@ Reports three numbers, kept separate on purpose:
   * core files: every executable line of those same files;
   * project baseline and UI files: all windows/src files, and the UI files on their own.
 A line is covered when any module that compiled it executed it (hits are merged across the
-test binaries). Exits 1 when changed-core coverage is below --threshold, 2 on bad input.
+test binaries). Exits 1 when changed-core coverage is below --threshold, 2 on bad input. A change
+with no executable core line (UI, installer or resources only) has nothing to gate and passes; a
+run that recorded no coverage at all still fails.
 """
 import argparse
 import collections
@@ -125,13 +127,19 @@ def main() -> int:
     p_cov, p_total = totals(project)
     u_cov, u_total = totals(ui)
     changed_pct = 0.0 if changed_total == 0 else 100.0 * changed_covered / changed_total
-    passed = changed_total > 0 and changed_pct >= args.threshold and not unmeasured
+    recorded = p_total > 0
+    passed = recorded and not unmeasured and (changed_total == 0 or changed_pct >= args.threshold)
+    verdict = 'met' if passed else 'NOT met'
+    if not recorded:
+        verdict = 'NOT met: no coverage recorded'
+    elif passed and changed_total == 0:
+        verdict = 'met: no executable core line changed'
 
     report = [
         '## Translation-profiles line coverage (OpenCppCoverage, Debug + PDB)',
         '',
         f'- Changed core lines: **{changed_covered}/{changed_total} = {ratio(changed_covered, changed_total)}** '
-        f'(gate: >= {args.threshold:.0f}%: {"met" if passed else "NOT met"})',
+        f'(gate: >= {args.threshold:.0f}%: {verdict})',
         *([f'- Unmeasured core sources (gate fails): {", ".join(unmeasured)}'] if unmeasured else []),
         f'- Core files, all lines: {file_covered}/{file_total} = {ratio(file_covered, file_total)}',
         f'- Project baseline (windows/src without self-test files): {p_cov}/{p_total} = {ratio(p_cov, p_total)}',

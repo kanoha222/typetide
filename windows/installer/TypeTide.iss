@@ -28,7 +28,9 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
+; force: a running TypeTide that does not close on request (versions before 0.2.0 ignore
+; Restart Manager) is terminated instead of failing the upgrade with "DeleteFile failed; code 5".
+CloseApplications=force
 RestartApplications=no
 DisableProgramGroupPage=yes
 

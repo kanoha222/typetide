@@ -47,6 +47,12 @@ jobs:
             throw "windows/CMakeLists.txt does not match VERSION=$version"
           }
           [xml](Get-Content windows/src/TypeTide.manifest -Raw) | Out-Null
+          # The UTF-8 version resource must not be read in an ANSI code page (garbled "—").
+          $info = (Get-Item windows/build/Release/TypeTide.exe).VersionInfo
+          $expected = "TypeTide $([char]0x2014) system-wide AI translation & inline rewrite"
+          if ($info.FileDescription -ne $expected -or $info.ProductVersion -ne $version) {
+            throw "TypeTide.exe version resource: '$($info.FileDescription)' / '$($info.ProductVersion)'"
+          }
 
   macos:
     name: macOS unit + end-to-end tests

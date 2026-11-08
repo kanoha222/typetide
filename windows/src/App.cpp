@@ -652,6 +652,14 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp != kQuitTimerId) break;
         finishQuit();
         return 0;
+    // Sign-out, shutdown, or Restart Manager (an installer replacing our files, ENDSESSION_CLOSEAPP):
+    // nothing to save, so agree, then quit the normal way (a pending paste still restores the
+    // clipboard). Without this the hidden window ignored the request and setup could not close us.
+    case WM_QUERYENDSESSION:
+        return TRUE;
+    case WM_ENDSESSION:
+        if (wp && !quitting_) quit();
+        return 0;
     case WM_DESTROY:
         tray_.remove();
         return 0;
