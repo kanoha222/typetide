@@ -70,11 +70,13 @@ struct ExecutionDirection {
 
 /// Native/Foreign actions: target = the profile language, source = Detect(text) (a detected
 /// third language is kept). Smart actions: lang::ResolveDirection with isWrite =
-/// IsReplaceAction(action). targetOverride replaces ONLY the resolved target (retarget);
-/// the source and the saved profile are untouched.
+/// IsReplaceAction(action). targetOverride replaces ONLY the resolved target (retarget) and
+/// sourceOverride ONLY the resolved source (the popup's source choice when detection fails);
+/// the saved profile is untouched.
 ExecutionDirection ResolveActionDirection(const TranslationProfile& profile, ShortcutAction action,
                                           const std::wstring& text,
-                                          std::optional<Language> targetOverride = std::nullopt);
+                                          std::optional<Language> targetOverride = std::nullopt,
+                                          std::optional<Language> sourceOverride = std::nullopt);
 
 // ---------- prompts ----------
 
@@ -134,12 +136,14 @@ struct PreparedRequest {
 /// prompt (empty or Unicode-whitespace-only, as profiles::Validate defines it) is
 /// TemplateInvalid.
 PreparedRequest Preview(const ExecutionContext& context, const std::wstring& text,
-                        std::optional<Language> targetOverride = std::nullopt);
+                        std::optional<Language> targetOverride = std::nullopt,
+                        std::optional<Language> sourceOverride = std::nullopt);
 
 /// Preview plus provider endpoint / model / authentication validation, finalUrl and
 /// cacheIdentity. This is what the runtime consumes.
 PreparedRequest Prepare(const ExecutionContext& context, const std::wstring& text,
-                        std::optional<Language> targetOverride = std::nullopt);
+                        std::optional<Language> targetOverride = std::nullopt,
+                        std::optional<Language> sourceOverride = std::nullopt);
 
 // ---------- runtime-facing helpers ----------
 

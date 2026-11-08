@@ -18,6 +18,7 @@
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <uxtheme.h>
+#include <vsstyle.h>
 #include <string>
 #include <atomic>
 #include <functional>
@@ -60,7 +61,7 @@ enum CtrlId : int {
     kHkReadLabel, kHkRead, kReadWin, kHkReadClear,
     kHkRewriteLabel, kHkRewrite, kRewriteWin, kHkRewriteClear,
     kReadActionLabel, kReadAction, kRewriteActionLabel, kRewriteAction,
-    kHkRestoreDefaults, kHkVerify, kHkNote,
+    kHkRestoreDefaults, kHkVerify, kHkNote, kHkStatus,
     // Behavior
     kTriggerLabel, kTrigger, kPreview, kBehaviorNote,
     // Skip apps
@@ -120,6 +121,61 @@ HBRUSH pageBrush() { static HBRUSH light = CreateSolidBrush(RGB(0xF3, 0xF3, 0xF3
 HBRUSH navBrush() { static HBRUSH light = CreateSolidBrush(RGB(0xF0, 0xEF, 0xF5)); static HBRUSH dark = CreateSolidBrush(RGB(0x19, 0x19, 0x1B)); return g.dark ? dark : light; }
 HBRUSH editBrush() { static HBRUSH light = CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF)); static HBRUSH dark = CreateSolidBrush(RGB(0x2B, 0x2B, 0x2E)); return g.dark ? dark : light; }
 
+// The themed BUTTON renderer can ignore WM_CTLCOLORBTN's text color.
+// Keep native glyphs/backgrounds, but explicitly draw readable dark-mode text.
+LRESULT drawDarkButton(NMCUSTOMDRAW* draw) {
+    if (draw->dwDrawStage != CDDS_PREPAINT) return CDRF_DODEFAULT;
+    HWND button = draw->hdr.hwndFrom;
+    const LONG_PTR style = GetWindowLongPtrW(button, GWL_STYLE);
+    const UINT type = (UINT)(style & BS_TYPEMASK);
+    const bool checkbox = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX;
+    const bool radio = type == BS_AUTORADIOBUTTON || type == BS_RADIOBUTTON;
+    if (!checkbox && !radio && type != BS_PUSHBUTTON && type != BS_DEFPUSHBUTTON)
+        return CDRF_DODEFAULT;
+    HTHEME theme = OpenThemeData(button, L"Button");
+    if (!theme) return CDRF_DODEFAULT;
+    const bool disabled = !IsWindowEnabled(button);
+    const bool pressed = (draw->uItemState & CDIS_SELECTED) != 0;
+    const bool hot = (draw->uItemState & CDIS_HOT) != 0;
+    int state = disabled ? 4 : pressed ? 3 : hot ? 2 : 1;
+    RECT textRect = draw->rc;
+    FillRect(draw->hdc, &draw->rc, pageBrush());
+    if (checkbox || radio) {
+        const int part = radio ? BP_RADIOBUTTON : BP_CHECKBOX;
+        if (SendMessageW(button, BM_GETCHECK, 0, 0) == BST_CHECKED) state += 4;
+        SIZE size{px(16), px(16)};
+        GetThemePartSize(theme, draw->hdc, part, state, nullptr, TS_TRUE, &size);
+        RECT glyph{draw->rc.left, draw->rc.top + (draw->rc.bottom - draw->rc.top - size.cy) / 2,
+                   draw->rc.left + size.cx, 0};
+        glyph.bottom = glyph.top + size.cy;
+        DrawThemeBackground(theme, draw->hdc, part, state, &glyph, nullptr);
+        textRect.left = glyph.right + px(6);
+    } else {
+        if (!disabled && !pressed && !hot && type == BS_DEFPUSHBUTTON) state = PBS_DEFAULTED;
+        DrawThemeBackground(theme, draw->hdc, BP_PUSHBUTTON, state, &draw->rc, nullptr);
+        InflateRect(&textRect, -px(4), 0);
+    }
+    CloseThemeData(theme);
+    const int saved = SaveDC(draw->hdc);
+    HFONT font = (HFONT)SendMessageW(button, WM_GETFONT, 0, 0);
+    if (font) SelectObject(draw->hdc, font);
+    SetBkMode(draw->hdc, TRANSPARENT);
+    SetTextColor(draw->hdc, disabled ? secondaryColor() : textColor());
+    wchar_t text[512]{};
+    GetWindowTextW(button, text, (int)std::size(text));
+    UINT flags = DT_SINGLELINE | DT_VCENTER | (checkbox || radio ? DT_LEFT : DT_CENTER);
+    const LRESULT uiState = SendMessageW(button, WM_QUERYUISTATE, 0, 0);
+    if (uiState & UISF_HIDEACCEL) flags |= DT_HIDEPREFIX;
+    DrawTextW(draw->hdc, text, -1, &textRect, flags);
+    if ((draw->uItemState & CDIS_FOCUS) && !(uiState & UISF_HIDEFOCUS)) {
+        RECT focus = textRect;
+        InflateRect(&focus, -1, -2);
+        DrawFocusRect(draw->hdc, &focus);
+    }
+    RestoreDC(draw->hdc, saved);
+    return CDRF_SKIPDEFAULT;
+}
+
 LRESULT CALLBACK hotkeyWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (g.dark && msg == WM_PAINT) {
         PAINTSTRUCT ps{};
@@ -178,8 +234,17 @@ void enableCommonControlDarkMode() {
     }
 }
 
+HIMAGELIST createTabImages();
+
 void applyTheme(HWND hwnd) {
     if (!hwnd) return;
+    if (g.tabImages) {
+        HIMAGELIST images = createTabImages();
+        if (images) {
+            ImageList_Destroy(g.tabImages);
+            g.tabImages = images;
+        }
+    }
     BOOL dark = g.dark;
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
     SetWindowTheme(hwnd, g.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
@@ -224,7 +289,7 @@ HWND ctrl(int id) { return GetDlgItem(g.hwnd, id); }
 
 HIMAGELIST createTabImages() {
     const int size = px(16);
-    HIMAGELIST images = ImageList_Create(size, size, ILC_COLOR24 | ILC_MASK, 8, 0);
+    HIMAGELIST images = ImageList_Create(size, size, ILC_COLOR32, 8, 0);
     HDC dc = CreateCompatibleDC(nullptr);
     BITMAPINFO info{};
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -238,7 +303,7 @@ HIMAGELIST createTabImages() {
                                       reinterpret_cast<void**>(&pixels), nullptr, 0);
     HGDIOBJ oldBitmap = SelectObject(dc, bitmap);
     HBRUSH maskBrush = CreateSolidBrush(RGB(255, 0, 255));
-    HPEN pen = CreatePen(PS_SOLID, std::max(1, px(1)), GetSysColor(COLOR_WINDOWTEXT));
+    HPEN pen = CreatePen(PS_SOLID, std::max(1, px(1)), textColor());
     HGDIOBJ oldPen = SelectObject(dc, pen);
     HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
     auto p = [](int value) { return px(value); };
@@ -297,19 +362,17 @@ HIMAGELIST createTabImages() {
             MoveToEx(dc, p(8), p(7), nullptr); LineTo(dc, p(8), p(12));
             break;
         }
-        std::vector<BYTE> andMask(((size + 15) / 16) * 2 * size, 0xFF);
-        std::vector<BYTE> xorMask(andMask.size(), 0x00);
-        const int rowBytes = ((size + 15) / 16) * 2;
-        for (int yy = 0; yy < size; ++yy) {
-            for (int xx = 0; xx < size; ++xx) {
-                if ((pixels[yy * size + xx] & 0x00FFFFFF) != 0x00FF00FF)
-                    andMask[yy * rowBytes + xx / 8] &= static_cast<BYTE>(~(0x80 >> (xx % 8)));
-            }
+        // GDI draws RGB with no alpha. Convert the drawing's background to
+        // transparent pixels and its theme-colored strokes to opaque pixels.
+        // Avoid color-key masks: they leaked magenta tiles on dark navigation.
+        GdiFlush();
+        for (int pixel = 0; pixel < size * size; ++pixel) {
+            DWORD rgb = pixels[pixel] & 0x00FFFFFF;
+            pixels[pixel] = rgb == 0x00FF00FF ? 0 : (rgb | 0xFF000000);
         }
-        HICON iconHandle = CreateIcon(GetModuleHandleW(nullptr), size, size, 1, 1,
-                                      andMask.data(), xorMask.data());
-        ImageList_ReplaceIcon(images, -1, iconHandle);
-        DestroyIcon(iconHandle);
+        SelectObject(dc, oldBitmap);
+        ImageList_Add(images, bitmap, nullptr);
+        SelectObject(dc, bitmap);
     }
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
@@ -614,7 +677,7 @@ void buildPages() {
         makeLabel(L"STARTUP", x, y + 62, w, -1, true),
         make(L"BUTTON", L"Launch at login", WS_TABSTOP | BS_AUTOCHECKBOX, x, y + 88, 180, 22, kLogin),
         makeLabel(L"UPDATES", x, y + 150, w, -1, true),
-        makeLabel(L"Version " TYPETIDE_VERSION_STRING, x, y + 178, 200, kVersionLabel),
+        makeLabel(L"Version " TYPETIDE_VERSION_STRING L" (build " TYPETIDE_BUILD_STRING L")", x, y + 178, 300, kVersionLabel),
         make(L"BUTTON", L"Check for updates", WS_TABSTOP | BS_PUSHBUTTON, x, y + 206, 150, 32, kCheckUpdate),
         makeLabel(L"", x, y + 258, w, kFirstRunHint),
     };
@@ -707,6 +770,7 @@ void buildPages() {
         makeLabel(L"Changes apply immediately. Keep at least one shortcut; configured shortcuts must be different. "
                   L"Each shortcut runs the profile bound to it on the Translation page.",
                   x, y + 190, w, kHkNote),
+        make(L"STATIC", L"", SS_LEFT, x, y + 236, w, 90, kHkStatus),  // below the two-line note
     };
     g.pages[3].insert(g.pages[3].end(), controls.begin(), controls.end());
     }
@@ -775,7 +839,7 @@ void buildPages() {
     y = 82;
     {
     std::vector<HWND> controls = {
-        makeLabel(L"TypeTide " TYPETIDE_VERSION_STRING, x, y, 300, kAboutTitle, true),
+        makeLabel(L"TypeTide " TYPETIDE_VERSION_STRING L" (build " TYPETIDE_BUILD_STRING L")", x, y, 300, kAboutTitle, true),
         makeLabel(L"System-wide AI translation && inline rewrite for Windows.\n"
                   L"Private local models or secure OpenAI-compatible cloud APIs.",
                   x, y + 28, w, kAboutDesc),
@@ -935,7 +999,15 @@ void onCommand(int id, int code) {
                     auto* payload = new BuiltInProgress{fraction, status, done};
                     if (!PostMessageW(target, kMsgBuiltInProgress, 0, (LPARAM)payload)) delete payload;
                 };
+                ULONGLONG lastProgressTick = 0;
+                std::wstring lastProgressStatus;
                 bool ok = builtin::Download(*cancel, [&](double fraction, const std::wstring& status) {
+                    // Network reads can arrive thousands of times per second.
+                    // Limit queued UI updates, but show each new phase immediately.
+                    const ULONGLONG now = GetTickCount64();
+                    if (status == lastProgressStatus && now - lastProgressTick < 200) return;
+                    lastProgressTick = now;
+                    lastProgressStatus = status;
                     send(fraction, status, false);
                 }, &error);
                 send(ok ? 1.0 : 0.0, ok ? L"Model ready for offline translation" : error, true);
@@ -1038,8 +1110,8 @@ void onCommand(int id, int code) {
     }
     case kHkRestoreDefaults:
         change = [](SettingsData& d) {
-            d.readShortcut = {MOD_ALT, 'D'};
-            d.rewriteShortcut = {MOD_ALT, 'R'};
+            d.readShortcut = kDefaultReadShortcut;
+            d.rewriteShortcut = kDefaultRewriteShortcut;
             d.readShortcutAction = ShortcutAction::SmartPopup;
             d.rewriteShortcutAction = ShortcutAction::SmartReplace;
         };
@@ -1050,13 +1122,7 @@ void onCommand(int id, int code) {
         applyToApp();
         g.shortcutsReady = App::shared().shortcutsRegistered();
         updateFirstRunCompletion();
-        MessageBoxW(g.hwnd,
-                    g.shortcutsReady ? L"Every configured shortcut is registered and ready."
-                                     : (!s.readShortcut.isConfigured() && !s.rewriteShortcut.isConfigured()
-                                        ? L"Set at least one shortcut so TypeTide can be triggered from the keyboard."
-                                        : L"One or more shortcuts are unavailable. Choose a different combination."),
-                    L"TypeTide — shortcut verification",
-                    MB_OK | (g.shortcutsReady ? MB_ICONINFORMATION : MB_ICONWARNING));
+        SettingsWindow::refreshShortcutStatus();
         break;
 
     case kTrigger: {
@@ -1185,7 +1251,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g.hwnd && ctrl(kBuiltInStatus)) {
             std::wstring status = progress->status;
             if (!progress->done) status += L" " + std::to_wstring(int(progress->fraction * 100)) + L"%";
-            SetWindowTextW(ctrl(kBuiltInStatus), status.c_str());
+            // WM_SETTEXT repaints a STATIC even when the text is unchanged.
+            // Keep the label stable between visible percentage changes.
+            if (editText(ctrl(kBuiltInStatus)) != status)
+                SetWindowTextW(ctrl(kBuiltInStatus), status.c_str());
             if (progress->done) {
                 updateBuiltInStatus();
                 if (!builtin::Installed()) SetWindowTextW(ctrl(kBuiltInStatus), status.c_str());
@@ -1196,6 +1265,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_NOTIFY: {
         auto* hdr = (NMHDR*)lp;
+        if (g.dark && !g.highContrast && hdr->code == NM_CUSTOMDRAW) {
+            wchar_t cls[32]{};
+            GetClassNameW(hdr->hwndFrom, cls, (int)std::size(cls));
+            if (_wcsicmp(cls, L"Button") == 0)
+                return drawDarkButton(reinterpret_cast<NMCUSTOMDRAW*>(lp));
+        }
         if (hdr->idFrom == kAboutLinks && (hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
             auto* link = (NMLINK*)lp;
             ShellExecuteW(nullptr, L"open", link->item.szUrl, nullptr, nullptr, SW_SHOWNORMAL);
@@ -1318,8 +1393,87 @@ void profilesChanged() {
     syncCommitted();
 }
 
-void open(HWND appWindow) {
+bool testNavigationIconColors(bool dark, UINT dpi) {
+    const bool previousDark = g.dark;
+    const bool previousHighContrast = g.highContrast;
+    const UINT previousDpi = g.dpi;
+    g.dark = dark;
+    g.highContrast = false;
+    g.dpi = dpi;
+    const COLORREF expected = textColor();
+    HIMAGELIST images = createTabImages();
+    const int size = px(16);
+    g.dark = previousDark;
+    g.highContrast = previousHighContrast;
+    g.dpi = previousDpi;
+    if (!images) return false;
+    HDC dc = CreateCompatibleDC(nullptr);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void* pixels = nullptr;
+    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    if (!dc || !bitmap) {
+        if (bitmap) DeleteObject(bitmap);
+        if (dc) DeleteDC(dc);
+        ImageList_Destroy(images);
+        return false;
+    }
+    HGDIOBJ old = SelectObject(dc, bitmap);
+    bool ok = ImageList_GetImageCount(images) == 8;
+    // Include normal and selected backgrounds in both themes. The former
+    // magenta-only test could not distinguish transparency from leaked tiles.
+    const COLORREF backgrounds[] = {RGB(0x19, 0x19, 0x1B), RGB(0x3A, 0x31, 0x59),
+                                   RGB(0xF0, 0xEF, 0xF5), RGB(0xE4, 0xDF, 0xFF)};
+    for (COLORREF backgroundColor : backgrounds) {
+        HBRUSH background = CreateSolidBrush(backgroundColor);
+        for (int i = 0; i < 8 && ok; ++i) {
+            RECT rc{0, 0, size, size};
+            FillRect(dc, &rc, background);
+            ok = ImageList_Draw(images, i, dc, 0, 0, ILD_TRANSPARENT) != FALSE;
+            int strokes = 0;
+            for (int y = 0; y < size; ++y) {
+                for (int x = 0; x < size; ++x) {
+                    const COLORREF color = GetPixel(dc, x, y);
+                    if (color == backgroundColor) continue;
+                    ++strokes;
+                    if (color != expected) ok = false;
+                }
+            }
+            if (!strokes || GetPixel(dc, 0, 0) != backgroundColor) ok = false;
+        }
+        DeleteObject(background);
+    }
+    SelectObject(dc, old);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    ImageList_Destroy(images);
+    return ok;
+}
+
+void refreshShortcutStatus() {
+    if (!g.hwnd || !ctrl(kHkStatus)) return;
+    const auto& app = App::shared();
+    g.shortcutsReady = app.shortcutsRegistered();
+    std::wstring status;
+    if (!Settings::shared().enabled) status = L"TypeTide is disabled. Enable it to register shortcuts.";
+    else if (!app.shortcutIssue().empty())
+        status = app.shortcutIssue() + L"\nChoose another combination, then click Verify shortcuts to retry.";
+    else if (g.shortcutsReady) status = L"Every configured shortcut is registered and ready.";
+    else status = L"Set at least one shortcut to use TypeTide from the keyboard.";
+    SetWindowTextW(ctrl(kHkStatus), status.c_str());
+}
+
+void open(HWND appWindow, bool showShortcuts) {
     if (g.hwnd) {
+        refreshShortcutStatus();
+        if (showShortcuts) {
+            SendMessageW(ctrl(kTab), LB_SETCURSEL, 3, 0);
+            showPage(3);
+        }
         ShowWindow(g.hwnd, SW_SHOWNORMAL);
         SetForegroundWindow(g.hwnd);
         return;
@@ -1399,8 +1553,11 @@ void open(HWND appWindow) {
 
     buildPages();
     applyTheme(g.hwnd);
-    showPage(0);
+    const int initialPage = showShortcuts ? 3 : 0;
+    SendMessageW(ctrl(kTab), LB_SETCURSEL, initialPage, 0);
+    showPage(initialPage);
     g.loading = false;
+    refreshShortcutStatus();
 
     // Summaries, the Ollama endpoint and its (asynchronous) model list.
     syncCommitted();

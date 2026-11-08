@@ -22,21 +22,11 @@ TypeTide turns translation into an in-place system action. It lives in your menu
 - **Read** — select foreign text, hit a shortcut, and a translation pops up next to it.
 - **Write** — **type in your own language**, hit a shortcut, and it’s rewritten in place into the target language, ready to send.
 
-No browser tab and no copy-paste loop. On Apple Silicon Macs, translation defaults to an **integrated MLX model**, downloaded once and run offline without Ollama. You can also choose **Ollama** or an **OpenAI-compatible** endpoint. Windows continues to use Ollama or an API.
+No browser tab and no copy-paste loop. On Apple Silicon Macs, translation defaults to an **integrated MLX model**, downloaded once and run offline without Ollama. You can also choose **Ollama** or an **OpenAI-compatible** endpoint. Windows also includes a built-in offline backend, with its inference runtime bundled in the installer and portable ZIP. Intel Macs use Ollama or an API.
 
 <p align="center">
-  <img src="docs/screenshots/tide-transition.gif" alt="TypeTide's particle tide sweeps across selected text while the translation streams in" width="760" />
-  <br/><sub><i>The TypeTide transition · a particle tide carries the original text into its streamed translation.</i></sub>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/rewrite.gif" alt="Type Chinese, press the rewrite shortcut, and it is rewritten into English in place" width="760" />
-  <br/><sub><i>Write · type in your language, press <kbd>⌥R</kbd> on macOS or <kbd>Alt+R</kbd> on Windows, and it’s rewritten in place.</i></sub>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/translate.gif" alt="Select text and the translation streams into a popup" width="760" />
-  <br/><sub><i>Read · select text and the translation streams into a popup — Copy or Replace.</i></sub>
+  <img src="docs/screenshots/backend.png" alt="TypeTide backend settings" width="760" />
+  <br/><sub><i>Choose the built-in offline model, Ollama, or an API in Settings.</i></sub>
 </p>
 
 <p align="center">
@@ -52,14 +42,14 @@ No browser tab and no copy-paste loop. On Apple Silicon Macs, translation defaul
 - **Write · rewrite in place** — write in your native language, press the rewrite shortcut, and the input field is replaced with the translation. Replace immediately or preview first.
 - **Works in every app** — uses the Accessibility API (macOS) / UI Automation (Windows) to read the selection, with a clipboard-copy fallback for Electron/web apps, so it works even where text APIs don’t. The original clipboard is always restored.
 - **Undo-safe replacement** — replacements are pasted, preserving each app’s native undo stack.
-- **Local or cloud** — pluggable backends: **Built-in MLX** (Apple Silicon Mac), **Ollama** (offline, private), or any **OpenAI-compatible** API (`/chat/completions`, streaming). Switch in Settings.
+- **Local or cloud** — pluggable backends: **Built-in TranslateGemma** (MLX on Apple Silicon Mac; bundled CPU runtime on Windows), **Ollama** (offline, private), or any **OpenAI-compatible** API (`/chat/completions`, streaming). Switch in Settings.
 - **Model picker** — Settings lists your installed Ollama models, and recommends a comfortable size from physical memory. Each translation profile names its own model; a missing one is flagged in Settings, never swapped for another. Thinking models (qwen3 family, …) are handled — hidden reasoning is disabled so translations stay instant.
 - **Styles** — the built-in model supports Faithful translation. Formal, Casual, and Polished rewriting require Ollama or an API backend.
 - **Shortcut actions** — each of the two global shortcuts can independently use smart direction or a fixed native/foreign target, then show a popup or replace in place.
 - **Built-in checks** — first-run setup verifies permissions, backend translation, and shortcut registration. The backend check uses fixed synthetic text, never the clipboard.
 - **Private diagnostics** — optional operational events stay on the device and can be reviewed, exported, or cleared. They contain timing, outcome, backend, and capture method only—never selected text, translations, clipboard contents, app names, URLs, or credentials.
 - **Menu-bar / tray only** — no Dock or taskbar clutter. Global shortcuts, launch at login, per-app skip list.
-- **Native on both platforms** — SwiftUI on macOS, Win32 C++ on Windows. No Electron, no runtime.
+- **Native on both platforms** — SwiftUI on macOS, Win32 C++ on Windows. No Electron; local inference components are included.
 
 ## 💡 Why TypeTide
 
@@ -73,9 +63,9 @@ No browser tab and no copy-paste loop. On Apple Silicon Macs, translation defaul
 
 ## 🌍 Languages
 
-Detection and translation use the same 10-language set on macOS and Windows: **English (`en`), 中文 (`zh`), हिन्दी (`hi`), Español (`es`), Français (`fr`), العربية (`ar`), বাংলা (`bn`), Русский (`ru`), Português (`pt`), and Bahasa Indonesia (`id`)**.
+Detection and translation use the same 11-language set on macOS and Windows: **English (`en`), 中文 (`zh`), हिन्दी (`hi`), Español (`es`), Français (`fr`), العربية (`ar`), বাংলা (`bn`), Русский (`ru`), Português (`pt`), Bahasa Indonesia (`id`), and Tiếng Việt (`vi`)**.
 
-Pick your native and foreign language in **Settings → Language**. Each Read/Write shortcut (`⌥D / ⌥R` on macOS, `Alt+D / Alt+R` on Windows) has its own direction: **auto** detects the selected text's language and translates the other way, or pin a **fixed** direction for mixed-language text.
+Pick your native and foreign language in **Settings → Language**. Each Read/Write shortcut (`⌥D / ⌥R` on macOS, `Alt+D / Ctrl+Shift+R` on Windows) has its own direction: **auto** detects the selected text's language and translates the other way, or pin a **fixed** direction for mixed-language text.
 
 ## 🚀 Quick start
 
@@ -93,7 +83,9 @@ Windows — download and run the latest `TypeTide-Setup-x.y.z.exe` installer fro
 
 **macOS (Apple Silicon):** keep the default **Built-in (Offline)** backend and click **Download Model** in first-run setup or **Settings → Backend**. The pinned TranslateGemma 4B 4-bit model downloads about 2.22 GB from Hugging Face; selected text never leaves the Mac. Downloads use two connections, show transfer speed and estimated time, and save completed 16 MiB segments. Pause or quit and resume later without downloading saved segments again. Allow about 4.5 GB of free space during installation; all files are verified before use. No Ollama, Python, account, or API key is needed. Model memory is released after two idle minutes. This backend supports Faithful translation and in-place replacement; other writing styles require Ollama/API. Long selections over the model's 2K input-token limit produce an actionable error instead of being silently truncated. Model use is subject to the [Gemma terms](https://ai.google.dev/gemma/terms).
 
-**Windows or optional Mac backend:** install [Ollama](https://ollama.com/download), then:
+**Windows:** keep **Built-in (Offline)** and download the TranslateGemma GGUF model (about 2.49 GB) in **Settings → Translation**. The installer and portable ZIP include the CPU inference runtime. No Ollama installation or API key is required. Faithful translation and Replace are supported; choose Ollama/API for other writing styles.
+
+**Intel Macs, or an optional backend on either platform:** install [Ollama](https://ollama.com/download), then:
 ```bash
 # macOS: brew install ollama · Windows: winget install Ollama.Ollama
 ollama pull qwen3.5:4b   # or any compact chat model that fits your hardware
@@ -111,7 +103,7 @@ TypeTide lists your installed models in **Settings → Backend** (Windows: **Set
 macOS: allow TypeTide under **System Settings → Privacy & Security → Accessibility** (required to read selections and replace text). If TypeTide is missing, click **Show Current App** in setup and drag that copy into the permission list, then enable it. If an older copy has a stale grant, remove its entry and add the current copy again. Permission status refreshes automatically. Windows needs no special permission. Then:
 
 - Select text → **⌥D** (macOS) / **Alt+D** (Windows) → see the translation.
-- Type in your language → **⌥R** / **Alt+R** → it’s rewritten in place.
+- Type in your language → **⌥R** / **Ctrl+Shift+R** → it’s rewritten in place.
 
 Shortcuts, their actions, triggers, styles, and languages are all configurable in **Settings**. Either shortcut can be cleared completely; keep at least one configured if you want keyboard triggering. Windows combinations may also include the Windows key. Languages, direction, style or a custom system prompt, backend and model belong to named translation profiles (macOS: **Settings → Profiles**; Windows: **Settings → Translation → Manage profiles**); Shortcut 1, Shortcut 2 and the selection trigger each run the profile bound to them, and the menu bar / tray can switch those bindings. Use **Test bound models** and **Verify Shortcuts** to confirm the complete path before relying on it.
 
@@ -140,7 +132,7 @@ Select / type  ─►  Shortcut · floating icon · auto
 
 TypeTide can read and replace selected text across applications, so macOS requires Accessibility permission; Windows uses UI Automation without a separate permission prompt. Capture happens only after a configured shortcut, floating-icon click, or auto-translate selection event. Apps containing sensitive text can be disabled in **Settings → Excluded apps**; use **shortcut only** mode when you do not want passive selection monitoring.
 
-- With **Built-in (Offline)** on Apple Silicon, selected text is processed on the Mac. Download the model once before offline use.
+- With **Built-in (Offline)** on Apple Silicon Macs or Windows, selected text is processed on the computer. Download the model once before offline use.
 - With **Ollama**, captured text is sent only to the Ollama service on `127.0.0.1`. TypeTide has no hosted relay or telemetry service.
 - With an **OpenAI-compatible backend**, captured text is sent to the configured base URL when translation is triggered. That provider's retention and privacy policy applies; do not use a cloud backend for secrets or sensitive text.
 - Some apps do not expose their selection through accessibility APIs. TypeTide then briefly copies the selection, reads it, and restores the previous clipboard contents. Clipboard managers may still record that temporary copy.
@@ -189,7 +181,7 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build             # → build/TypeTide.exe
 ```
 
-Requirements: Windows 10+, Visual Studio 2022+ (MSVC, CMake, Ninja). No third-party dependencies — pure Win32 + WinHTTP + UI Automation. See [windows/README.md](windows/README.md) for architecture and the test harness.
+Requirements: Windows 10+, Visual Studio 2022+ (MSVC, CMake, Ninja). The UI uses Win32 + WinHTTP + UI Automation; the release build bundles a pinned llama.cpp CPU runtime for offline translation. See [windows/README.md](windows/README.md) for architecture and the test harness.
 
 **Releasing** — both platforms share one version (root `VERSION` file) and attach to the same GitHub release tag, in either order:
 

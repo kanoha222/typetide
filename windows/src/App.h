@@ -40,6 +40,8 @@ public:
     bool init(HINSTANCE inst);
     HWND hwnd() const { return hwnd_; }
     bool shortcutsRegistered() const { return shortcutsReady_; }
+    /// Why a configured shortcut is not registered (shown inline in Settings → Shortcuts); empty when none.
+    const std::wstring& shortcutIssue() const { return shortcutIssue_; }
 
     /// 根据开关 + 快捷键 + 划词设置重新装配触发（设置变化后调用）
     void applyEnabledState();
@@ -71,6 +73,7 @@ private:
         HWND focus;              // 取词时该窗口里有焦点的控件
         std::wstring original;
         Language target;
+        execution::ContextPtr context;  // a failure reopens as a popup session on the same profile
     };
     /// 一次触发在主线程冻结的全部输入；异步取词带着它回来。
     struct Trigger {
@@ -91,7 +94,9 @@ private:
     void presentRead(const capture::Capture& cap, execution::ContextPtr context);
     void proceedRewrite(const capture::Capture& cap, Trigger trigger);
     void openPopupSession(const capture::Capture& cap, execution::ContextPtr context, bool replaceSelectAll);
-    void installPopupHandlers(uint64_t sessionId);
+    /// A failed direct replacement becomes this popup session in its error state (Retry, source choice, Replace).
+    void openFailedRewriteSession(RewriteResult& result);
+    void installPopupHandlers(uint64_t sessionId, std::optional<Language> detectedSource);
     void replaceDirectly(const capture::Capture& cap, execution::ContextPtr context);
     /// 新的用户翻译：之前的会话全部失效（取消其流，未提交的粘贴不再落下）。返回新会话。
     uint64_t beginUserTranslation();
@@ -124,8 +129,9 @@ private:
     std::wstring sessionText_;
     HWND sessionWindow_ = nullptr;             // 弹窗会话取词时的前台窗口（Replace 的粘贴目标）
     HWND sessionFocus_ = nullptr;              // 以及该窗口里有焦点的控件
+    std::optional<Language> sessionSource_;    // 弹窗里选定的源语言（只作用于这个会话）
     bool currentReplaceSelectAll_ = false;     // 弹窗 Replace 时是否先全选
-    bool hotkeyWarningShown_ = false;
+    std::wstring shortcutIssue_;               // 未注册成功的快捷键说明（设置页内联显示）
     bool quitting_ = false;                    // after Quit: no new trigger or capture result
     bool readShortcutRegistered_ = false;
     bool rewriteShortcutRegistered_ = false;

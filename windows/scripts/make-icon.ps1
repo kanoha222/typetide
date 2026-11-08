@@ -12,11 +12,35 @@ $master = [System.Drawing.Image]::FromFile($src)
 $sizes = 16, 24, 32, 48, 64, 128, 256
 $pngs = @()
 foreach ($s in $sizes) {
+    # Windows does not mask app icons like macOS. Preserve the existing
+    # rounded tile and make its black outer corners transparent. Render the
+    # curved edge at 4x so the tray sizes have smooth alpha coverage too.
+    $renderSize = $s * 4
+    $rounded = New-Object System.Drawing.Bitmap $renderSize, $renderSize
+    $canvas = [System.Drawing.Graphics]::FromImage($rounded)
+    $canvas.Clear([System.Drawing.Color]::Transparent)
+    $canvas.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $texture = New-Object System.Drawing.TextureBrush $master
+    $texture.ScaleTransform([single]($renderSize / $master.Width), [single]($renderSize / $master.Height))
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $inset = [single]($renderSize * 12 / 512)
+    $edge = [single]($renderSize - $inset)
+    $diameter = [single]($renderSize * 280 / 512)
+    $path.AddArc($inset, $inset, $diameter, $diameter, 180, 90)
+    $path.AddArc(($edge - $diameter), $inset, $diameter, $diameter, 270, 90)
+    $path.AddArc(($edge - $diameter), ($edge - $diameter), $diameter, $diameter, 0, 90)
+    $path.AddArc($inset, ($edge - $diameter), $diameter, $diameter, 90, 90)
+    $path.CloseFigure()
+    $canvas.FillPath($texture, $path)
+    $path.Dispose()
+    $texture.Dispose()
+    $canvas.Dispose()
     $bmp = New-Object System.Drawing.Bitmap $s, $s
     $gfx = [System.Drawing.Graphics]::FromImage($bmp)
     $gfx.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $gfx.DrawImage($master, 0, 0, $s, $s)
+    $gfx.DrawImage($rounded, 0, 0, $s, $s)
     $gfx.Dispose()
+    $rounded.Dispose()
     $ms = New-Object System.IO.MemoryStream
     $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose()

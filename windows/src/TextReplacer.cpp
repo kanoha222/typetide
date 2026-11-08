@@ -149,15 +149,24 @@ private:
     DWORD sequence_ = 0;
 };
 
-void waitForClickRelease() {
-    // Replace can be started by the popup's WM_LBUTTONDOWN handler.  Do not
-    // inject Ctrl+V until that physical click has completed: otherwise the
-    // foreground editor can process the tail of the click between the Ctrl
-    // and V events, leaving a literal "v" behind on some controls.
-    DWORD mouseDeadline = GetTickCount() + 250;
-    while ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) && GetTickCount() < mouseDeadline)
+/// Do not inject Ctrl+V until the triggering gesture has finished: the tail of the popup's
+/// click, or the key-ups of a shortcut still held when a fast (cached) result arrives
+/// (Ctrl+Shift+R), can reach the editor between the Ctrl and V events and leave a literal "v"
+/// behind or change the combination. False when it is still held after 2 s.
+bool waitForGestureRelease() {
+    const int keys[] = {VK_LBUTTON, VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN};
+    auto held = [&keys] {
+        for (int key : keys)
+            if (GetAsyncKeyState(key) & 0x8000) return true;
+        return false;
+    };
+    const DWORD deadline = GetTickCount() + 2000;
+    while (held()) {
+        if (GetTickCount() >= deadline) return false;
         Sleep(5);
+    }
     Sleep(20);
+    return true;
 }
 
 ReplaceOutcome paste(const std::wstring& text, bool selectAll, const session::PasteGuard& guard) {
@@ -184,16 +193,17 @@ const char* failureReason(ReplaceOutcome outcome) {
     case ReplaceOutcome::AbortedStale: return "superseded";
     case ReplaceOutcome::AbortedTargetChanged: return "targetChanged";
     case ReplaceOutcome::ClipboardUnavailable: return "clipboardUnavailable";
+    case ReplaceOutcome::TriggerStillPressed: return "triggerStillPressed";
     }
     return "unknown";
 }
 
-/// 工作线程主体：等点击结束 → 守卫 → 延迟渲染剪贴板 → 守卫 → 合成粘贴 → 等目标取数据 → 还原剪贴板
+/// 工作线程主体：等点击/快捷键松开 → 守卫 → 延迟渲染剪贴板 → 守卫 → 合成粘贴 → 等目标取数据 → 还原剪贴板
 ReplaceOutcome replaceWorker(const std::wstring& text, bool selectAll, const session::PasteGuard& guard) {
     std::lock_guard lock(clipboard::TransactionMutex());  // never overlaps a fallback copy capture
     const DWORD started = GetTickCount();
-    waitForClickRelease();
-    const ReplaceOutcome outcome = paste(text, selectAll, guard);
+    const ReplaceOutcome outcome =
+        waitForGestureRelease() ? paste(text, selectAll, guard) : ReplaceOutcome::TriggerStillPressed;
     const bool ok = outcome == ReplaceOutcome::Pasted;
     diagnostics::Record("replacement", ok ? "success" : "failure", {}, {}, failureReason(outcome),
                         -1, (int)(GetTickCount() - started), (int)text.size());

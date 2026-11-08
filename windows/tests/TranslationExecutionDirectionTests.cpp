@@ -102,6 +102,21 @@ void TestTargetOverride() {
     Check(p == before, "override never edits the saved profile");
 }
 
+void TestSourceOverride() {
+    const TranslationProfile p = PairProfile(TranslationDirection::Auto);
+    const TranslationProfile before = p;
+    Check(Is(ResolveActionDirection(p, ShortcutAction::ForeignPopup, kUndetectable, std::nullopt, Language::Vietnamese),
+             Language::Vietnamese, Language::English),
+          "source override: fills an undetected source, the target is unchanged");
+    Check(Is(ResolveActionDirection(p, ShortcutAction::SmartPopup, kEnglishText, std::nullopt, Language::French),
+             Language::French, Language::Chinese),
+          "source override: replaces a detected source; smart direction still follows the text");
+    Check(Is(ResolveActionDirection(p, ShortcutAction::SmartPopup, kEnglishText, Language::Russian, Language::French),
+             Language::French, Language::Russian),
+          "source and target overrides combine");
+    Check(p == before, "source override never edits the saved profile");
+}
+
 } // namespace
 
 void RunDirectionTests() {
@@ -110,6 +125,7 @@ void RunDirectionTests() {
     TestFixedProfileDirection();
     TestOtherLanguagePair();
     TestTargetOverride();
+    TestSourceOverride();
 }
 
 } // namespace execution_test

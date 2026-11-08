@@ -96,8 +96,8 @@ public static class T {
 "@
 
 $NUL = [NullString]::Value  # PowerShell marshals $null as "" for string parameters
-$VK_MENU = 0x12; $VK_ESCAPE = 0x1B; $VK_DOWN = 0x28; $VK_RIGHT = 0x27; $VK_RETURN = 0x0D
-$WM_SETTEXT = 0x000C; $WM_KEYDOWN = 0x0100; $WM_LBUTTONDOWN = 0x0201; $WM_RBUTTONUP = 0x0205
+$VK_MENU = 0x12; $VK_CONTROL = 0x11; $VK_SHIFT = 0x10; $VK_ESCAPE = 0x1B; $VK_DOWN = 0x28; $VK_RIGHT = 0x27; $VK_RETURN = 0x0D
+$WM_SETTEXT = 0x000C; $WM_KEYDOWN = 0x0100; $WM_LBUTTONDOWN = 0x0201; $WM_LBUTTONUP = 0x0202; $WM_RBUTTONUP = 0x0205
 $EM_SETSEL = 0x00B1; $MN_GETHMENU = 0x01E1; $WM_APP_TRAY = 0x8000 + 1
 $MF_BYPOSITION = 0x400; $MF_CHECKED = 0x8; $MF_HILITE = 0x80
 $MOUSEEVENTF_LEFTDOWN = 0x0002; $MOUSEEVENTF_LEFTUP = 0x0004; $IDOK = 1
@@ -156,7 +156,8 @@ function Write-Settings([string]$shortcut1, [string]$shortcut2, [string]$action1
         shortcut1ProfileId = $shortcut1; shortcut2ProfileId = $shortcut2; selectionProfileId = 'p-select'
         enabled = $true; backend = 'ollama'; ollamaHost = 'http://127.0.0.1'; ollamaPort = $Port
         readShortcut = [ordered]@{ modifiers = 1; vk = 0x44 }  # Alt+D
-        rewriteShortcut = [ordered]@{ modifiers = $(if ($shortcut2Vk) { 1 } else { 0 }); vk = $shortcut2Vk }
+        # Ctrl+Shift+R (MOD_CONTROL | MOD_SHIFT), the default; the legacy smoke scripts press it too.
+        rewriteShortcut = [ordered]@{ modifiers = $(if ($shortcut2Vk) { 6 } else { 0 }); vk = $shortcut2Vk }
         readShortcutAction = $action1; rewriteShortcutAction = $action2
         selectionTrigger = $trigger; rewritePreview = $false
         hasCompletedFirstLaunch = $true  # no first-run Settings window
@@ -259,7 +260,10 @@ function Click-Replace {
     $scale = [T]::GetDpiForWindow($popup) / 96.0
     $x = [int]($rect.Right - (16 + 42) * $scale)
     $y = [int]($rect.Bottom - (12 + 16) * $scale)
-    [T]::PostMessageW($popup, $WM_LBUTTONDOWN, [IntPtr]1, [IntPtr](($y -shl 16) -bor $x)) | Out-Null
+    $point = [IntPtr](($y -shl 16) -bor $x)
+    # Replace commits on the button's mouse-up (a press alone, or a release elsewhere, does nothing).
+    [T]::PostMessageW($popup, $WM_LBUTTONDOWN, [IntPtr]1, $point) | Out-Null
+    [T]::PostMessageW($popup, $WM_LBUTTONUP, [IntPtr]::Zero, $point) | Out-Null
     return $true
 }
 
@@ -341,7 +345,7 @@ function Test-PopupAndReplace {
 
     Check (Prepare-Text) "the source text is selected again"
     $from = Record-Count
-    Send-Combo @($VK_MENU) 0x52  # Alt+R
+    Send-Combo @($VK_CONTROL, $VK_SHIFT) 0x52  # Ctrl+Shift+R
     $replaced = (Replaced-Text) -replace "`r`n", "`n"
     Check ($replaced -eq $Exact.TrimEnd("`n")) `
         "direct replacement keeps the custom output's indentation and tab, without the trailing line break" `
@@ -368,7 +372,7 @@ function Test-SwappedActions {
         "shortcut 1 now replaces, still with its own profile" "got '$(Visible-Text $replaced)', models '$(Models $from)'"
     Check (Prepare-Text) "swapped: source text selected again"
     $from = Record-Count
-    Send-Combo @($VK_MENU) 0x52
+    Send-Combo @($VK_CONTROL, $VK_SHIFT) 0x52
     $popup = Popup-Text
     Check ($popup -eq $Exact -and (Models $from) -eq 'mock-exact') `
         "shortcut 2 now opens a popup, still with its own profile" "got '$(Visible-Text $popup)', models '$(Models $from)'"
@@ -385,11 +389,11 @@ function Test-SameAction {
     Write-Output "[both shortcuts with the same action]"
     Write-Settings 'p-popup' 'p-exact' 'smartPopup' 'smartPopup'
     Check ($null -ne (Start-App)) "TypeTide restarts with one action on both shortcuts"
-    foreach ($case in @(@{ vk = 0x44; text = $Default; model = 'mock-default'; name = 'shortcut 1' },
-                        @{ vk = 0x52; text = $Exact; model = 'mock-exact'; name = 'shortcut 2' })) {
+    foreach ($case in @(@{ mods = @($VK_MENU); vk = 0x44; text = $Default; model = 'mock-default'; name = 'shortcut 1' },
+                        @{ mods = @($VK_CONTROL, $VK_SHIFT); vk = 0x52; text = $Exact; model = 'mock-exact'; name = 'shortcut 2' })) {
         Check (Prepare-Text) "same action: source text selected for $($case.name)"
         $from = Record-Count
-        Send-Combo @($VK_MENU) ([byte]$case.vk)
+        Send-Combo ([byte[]]$case.mods) ([byte]$case.vk)
         $popup = Popup-Text
         Check ($popup -eq $case.text -and (Models $from) -eq $case.model) `
             "$($case.name) runs its own profile when both share an action" "got '$(Visible-Text $popup)', models '$(Models $from)'"
@@ -403,7 +407,7 @@ function Test-ClearedShortcutAndSelection {
     Check ($null -ne (Start-App)) "TypeTide restarts with shortcut 2 cleared and auto selection"
     Check (Prepare-Text) "cleared: source text selected"
     $from = Record-Count
-    Send-Combo @($VK_MENU) 0x52
+    Send-Combo @($VK_CONTROL, $VK_SHIFT) 0x52
     Start-Sleep -Seconds 3
     Check ((-not (Find-Popup)) -and (Edit-Text) -eq $Source -and (Translations $from).Count -eq 0) `
         "a cleared shortcut triggers nothing"
