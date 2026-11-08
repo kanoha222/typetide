@@ -90,8 +90,8 @@ bool App::init(HINSTANCE inst) {
 
     // 首次启动：打开设置窗口，让用户立刻完成配置
     Settings& s = Settings::shared();
-    if (!s.hasCompletedFirstLaunch) {
-        openSettings();
+    if (!s.hasCompletedFirstLaunch || !shortcutIssue_.empty()) {
+        openSettings();  // 快捷键注册失败：直接打开到 Shortcuts 页内联说明，不弹阻塞对话框
     }
 
     updatechecker::CheckIfDue(hwnd_, WM_APP_UPDATE);
@@ -114,19 +114,20 @@ void App::applyEnabledState() {
     readShortcutRegistered_ = false;
     rewriteShortcutRegistered_ = false;
     shortcutsReady_ = false;
+    shortcutIssue_.clear();
 
     const Settings& s = Settings::shared();
-    if (!s.enabled) return;
+    if (!s.enabled) {
+        SettingsWindow::refreshShortcutStatus();
+        return;
+    }
 
     if (s.readShortcut.isConfigured() && s.rewriteShortcut.isConfigured()
         && s.readShortcut == s.rewriteShortcut) {
         diagnostics::Record("shortcutRegistration", "failure", {}, {}, "duplicate");
-        if (!hotkeyWarningShown_) {
-            hotkeyWarningShown_ = true;
-            MessageBoxW(nullptr,
-                        L"Translate and rewrite must use different shortcuts. Choose a different combination in Settings → Shortcuts.",
-                        L"TypeTide — duplicate shortcuts", MB_OK | MB_ICONWARNING);
-        }
+        shortcutIssue_ = L"Shortcut 1 and Shortcut 2 use the same combination. Choose different combinations below.";
+        SettingsWindow::refreshShortcutStatus();
+        setupSelectionTrigger();
         return;
     }
 
@@ -135,27 +136,28 @@ void App::applyEnabledState() {
     bool ok1 = !readConfigured || RegisterHotKey(hwnd_, kReadHotkeyId,
                                                  s.readShortcut.modifiers | MOD_NOREPEAT,
                                                  s.readShortcut.vk);
+    const DWORD readError = ok1 ? ERROR_SUCCESS : GetLastError();
     bool ok2 = !rewriteConfigured || RegisterHotKey(hwnd_, kRewriteHotkeyId,
                                                     s.rewriteShortcut.modifiers | MOD_NOREPEAT,
                                                     s.rewriteShortcut.vk);
-    readShortcutRegistered_ = ok1;
-    rewriteShortcutRegistered_ = ok2;
+    const DWORD rewriteError = ok2 ? ERROR_SUCCESS : GetLastError();
+    readShortcutRegistered_ = readConfigured && ok1;
+    rewriteShortcutRegistered_ = rewriteConfigured && ok2;
     shortcutsReady_ = (readConfigured || rewriteConfigured) && ok1 && ok2;
     diagnostics::Record("shortcutRegistration", shortcutsReady_ ? "success" : "failure",
                         {}, {}, shortcutsReady_ ? "" :
                                   (!readConfigured && !rewriteConfigured ? "notConfigured" : "unavailable"));
-    if ((!ok1 || !ok2) && !hotkeyWarningShown_) {
-        hotkeyWarningShown_ = true;
-        std::wstring unavailable;
-        if (readConfigured && !ok1) unavailable += L"Shortcut 1: " + s.readShortcut.displayString();
-        if (!ok1 && !ok2) unavailable += L"\n";
-        if (rewriteConfigured && !ok2) unavailable += L"Shortcut 2: " + s.rewriteShortcut.displayString();
-        std::wstring message = L"These shortcuts could not be registered:\n\n" + unavailable +
-                               L"\n\nChoose different shortcuts in Settings → Shortcuts.";
-        MessageBoxW(nullptr, message.c_str(),
-                    L"TypeTide — shortcut unavailable", MB_OK | MB_ICONWARNING);
-    }
-    if (ok1 && ok2) hotkeyWarningShown_ = false;
+    auto unavailable = [&](const wchar_t* slot, const Hotkey& shortcut, DWORD error) {
+        if (!shortcutIssue_.empty()) shortcutIssue_ += L"\n";
+        shortcutIssue_ += std::wstring(slot) + L": " + shortcut.displayString();
+        shortcutIssue_ += error == ERROR_HOTKEY_ALREADY_REGISTERED
+            ? L" is in use by another application."
+            : L" could not register (Windows error " + std::to_wstring(error) + L").";
+        util::Log("shortcut registration failed slot=%ls error=%lu", slot, error);
+    };
+    if (!ok1) unavailable(L"Shortcut 1", s.readShortcut, readError);
+    if (!ok2) unavailable(L"Shortcut 2", s.rewriteShortcut, rewriteError);
+    SettingsWindow::refreshShortcutStatus();
 
     setupSelectionTrigger();
 }
@@ -181,7 +183,7 @@ void App::setupSelectionTrigger() {
 }
 
 void App::openSettings() {
-    SettingsWindow::open(hwnd_);
+    SettingsWindow::open(hwnd_, !shortcutIssue_.empty());
 }
 
 void App::openProfiles() {
@@ -369,23 +371,43 @@ void App::openPopupSession(const capture::Capture& cap, execution::ContextPtr co
         return;
     }
     const uint64_t sessionId = beginUserTranslation();
-    const Language target =
-        execution::ResolveActionDirection(context->profile, context->action, cap.text).target;
+    const execution::ExecutionDirection direction =
+        execution::ResolveActionDirection(context->profile, context->action, cap.text);
     popupSession_ = sessionId;
     sessionContext_ = std::move(context);
     sessionText_ = cap.text;
     sessionWindow_ = cap.window;
     sessionFocus_ = cap.focus;
+    sessionSource_.reset();
     currentReplaceSelectAll_ = replaceSelectAll;
 
     // show() 先以 Superseded 关掉旧弹窗；旧会话此时已过期，它的关闭不会影响新会话。
-    PopupWindow::shared().show(cap.text, target, anchor, /*showReplace=*/true);
-    installPopupHandlers(sessionId);
+    PopupWindow::shared().show(cap.text, direction.target, anchor, /*showReplace=*/true);
+    installPopupHandlers(sessionId, direction.source);
     startStream(std::nullopt);
 }
 
-void App::installPopupHandlers(uint64_t sessionId) {
+void App::openFailedRewriteSession(RewriteResult& result) {
+    // Same session as the failed replacement (it is still the newest): Retry and a source
+    // choice re-run its frozen profile, and Replace pastes into the window it was captured from.
+    const uint64_t sessionId = result.ticket.session;
+    popupSession_ = sessionId;
+    sessionContext_ = std::move(result.context);
+    sessionText_ = result.original;
+    sessionWindow_ = result.window;
+    sessionFocus_ = result.focus;
+    sessionSource_.reset();
+    currentReplaceSelectAll_ = result.isWholeField;
     PopupWindow& popup = PopupWindow::shared();
+    popup.show(result.original, result.target, result.anchor, /*showReplace=*/true);
+    installPopupHandlers(sessionId, execution::ResolveActionDirection(sessionContext_->profile, sessionContext_->action,
+                                                                      sessionText_).source);
+    popup.setError(result.error);
+}
+
+void App::installPopupHandlers(uint64_t sessionId, std::optional<Language> detectedSource) {
+    PopupWindow& popup = PopupWindow::shared();
+    popup.setSource(detectedSource);
     popup.onReplace = [this, sessionId] { onPopupReplace(sessionId); };
     popup.onRetarget = [this](Language newTarget) {
         PopupWindow& p = PopupWindow::shared();
@@ -395,6 +417,15 @@ void App::installPopupHandlers(uint64_t sessionId) {
     };
     popup.onRetry = [this] {
         PopupWindow& p = PopupWindow::shared();
+        p.resetForRetranslate();
+        startStream(p.target());
+    };
+    // Offered with the error (e.g. the source could not be detected): this session only, the
+    // saved profile is untouched; later retries and retargets keep the chosen source.
+    popup.onSourceChange = [this](Language source) {
+        sessionSource_ = source;
+        PopupWindow& p = PopupWindow::shared();
+        p.setSource(source);
         p.resetForRetranslate();
         startStream(p.target());
     };
@@ -434,7 +465,8 @@ void App::startStream(std::optional<Language> targetOverride) {
         [hwnd, ticket](uint64_t, bool ok, const std::wstring& error) {
             auto* payload = new DoneMsg{ticket, ok, error};
             if (!PostMessageW(hwnd, WM_APP_TR_DONE, 0, (LPARAM)payload)) delete payload;
-        });
+        },
+        sessionSource_);
     ledger_.attachRequest(ticket, requestId);
 }
 
@@ -496,6 +528,7 @@ void App::replaceDirectly(const capture::Capture& cap, execution::ContextPtr con
                 focus,
                 original,
                 target,
+                context,
             };
             if (!PostMessageW(hwnd, WM_APP_REWRITE_DONE, 0, (LPARAM)msg)) delete msg;
         });
@@ -564,6 +597,8 @@ void App::onRewriteDone(RewriteResult& result) {
                                ledger_.pasteGuard(result.ticket.session,
                                                   reinterpret_cast<std::uintptr_t>(result.window),
                                                   reinterpret_cast<std::uintptr_t>(result.focus)));
+    } else if (result.context) {
+        openFailedRewriteSession(result);
     } else {
         showErrorPopup(result.original, result.target, result.anchor, result.error);
     }

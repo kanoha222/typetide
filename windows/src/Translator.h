@@ -59,9 +59,11 @@ execution::ContextPtr FreezeEntry(ProfileEntry entry, ShortcutAction action);
 
 /// Prepares the frozen context on the calling (main) thread and streams on a worker. Prepare
 /// failures and cache hits call back synchronously before this returns. Deltas are the raw
-/// provider stream; the cache stores execution::DeliveredOutput.
+/// provider stream; the cache stores execution::DeliveredOutput. sourceOverride is the popup's
+/// per-request source choice (see execution::ResolveActionDirection).
 uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
-                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone);
+                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone,
+                std::optional<Language> sourceOverride = std::nullopt);
 
 /// Stream() for tests (the profile editor's fixed-text test): never reads or writes the cache
 /// and records no translation diagnostics, so a result always comes from the provider.

@@ -347,8 +347,8 @@ namespace {
 // Stream() and connection tests. A connection test skips the cache (read and write) and the
 // translation diagnostics; it reports its own health-check event.
 uint64_t startStream(const execution::ContextPtr& context, const std::wstring& text,
-                     std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone,
-                     bool connectionTest) {
+                     std::optional<Language> targetOverride, std::optional<Language> sourceOverride,
+                     DeltaFn onDelta, DoneFn onDone, bool connectionTest) {
     const uint64_t id = g_nextId.fetch_add(1);
     if (!context) {
         onDone(id, false, L"No translation profile is bound to this action.");
@@ -356,7 +356,7 @@ uint64_t startStream(const execution::ContextPtr& context, const std::wstring& t
     }
     const Clock::time_point start = Clock::now();
     const char* provider = backendName(context->profile.backend);
-    execution::PreparedRequest request = execution::Prepare(*context, text, targetOverride);
+    execution::PreparedRequest request = execution::Prepare(*context, text, targetOverride, sourceOverride);
     if (!request.ok()) {
         if (!connectionTest)
             diagnostics::Record("translation", "failure", provider, {}, "prepare", -1, 0, (int)text.size());
@@ -388,13 +388,14 @@ uint64_t startStream(const execution::ContextPtr& context, const std::wstring& t
 } // namespace
 
 uint64_t Stream(const execution::ContextPtr& context, const std::wstring& text,
-                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
-    return startStream(context, text, targetOverride, std::move(onDelta), std::move(onDone), false);
+                std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone,
+                std::optional<Language> sourceOverride) {
+    return startStream(context, text, targetOverride, sourceOverride, std::move(onDelta), std::move(onDone), false);
 }
 
 uint64_t StreamUncached(const execution::ContextPtr& context, const std::wstring& text,
                         std::optional<Language> targetOverride, DeltaFn onDelta, DoneFn onDone) {
-    return startStream(context, text, targetOverride, std::move(onDelta), std::move(onDone), true);
+    return startStream(context, text, targetOverride, std::nullopt, std::move(onDelta), std::move(onDone), true);
 }
 
 void Cancel(uint64_t reqId) {
@@ -450,7 +451,7 @@ void CheckConnectionAsync(const profilestatus::Probe& probe, const execution::Co
     const std::string backend = backendName(probe.backend);
     startStream(
         connectionTestContext(probe, connection), L"TypeTide connection test: the weather is nice today.",
-        std::nullopt,
+        std::nullopt, std::nullopt,
         [state](uint64_t, const std::wstring& delta) {
             std::lock_guard lock(state->mutex);
             if (!delta.empty() && !state->first) state->first = Clock::now();

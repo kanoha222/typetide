@@ -2,6 +2,7 @@
 #include "TranslationExecutionSupport.h"
 #include <cstddef>
 #include <initializer_list>
+#include <iterator>
 #include <string>
 
 // Preset byte goldens and the custom-template renderer. Expected strings are
@@ -29,8 +30,9 @@ const StyleRow kStyles[] = {
 // Same order as lang::All.
 const char* const kPromptNames[] = {
     "English", "Chinese", "Hindi", "Spanish", "French",
-    "Arabic", "Bengali", "Russian", "Portuguese", "Indonesian",
+    "Arabic", "Bengali", "Russian", "Portuguese", "Indonesian", "Vietnamese",
 };
+static_assert(std::size(kPromptNames) == std::size(lang::All), "one prompt name per supported language");
 
 void TestSystemGoldens() {
     Check(PresetSystemPrompt(Language::Chinese, Language::English, RewriteStyle::Faithful) ==

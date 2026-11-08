@@ -194,7 +194,8 @@ ContextPtr Freeze(TranslationProfile profile, ShortcutAction action, ConnectionS
 
 ExecutionDirection ResolveActionDirection(const TranslationProfile& profile, ShortcutAction action,
                                           const std::wstring& text,
-                                          std::optional<Language> targetOverride) {
+                                          std::optional<Language> targetOverride,
+                                          std::optional<Language> sourceOverride) {
     ExecutionDirection direction;
     switch (action) {
     case ShortcutAction::NativePopup:
@@ -217,6 +218,7 @@ ExecutionDirection ResolveActionDirection(const TranslationProfile& profile, Sho
     }
     }
     if (targetOverride) direction.target = *targetOverride;
+    if (sourceOverride) direction.source = *sourceOverride;
     direction.ready = true;
     return direction;
 }
@@ -275,7 +277,7 @@ RenderedPrompt RenderCustomPrompt(const std::string& templateText, std::optional
 }
 
 PreparedRequest Preview(const ExecutionContext& context, const std::wstring& text,
-                        std::optional<Language> targetOverride) {
+                        std::optional<Language> targetOverride, std::optional<Language> sourceOverride) {
     const TranslationProfile& profile = context.profile;
     PreparedRequest request;
     request.backend = profile.backend;
@@ -283,7 +285,7 @@ PreparedRequest Preview(const ExecutionContext& context, const std::wstring& tex
         request.status = PrepareStatus::CapabilityRejected;
         return request;
     }
-    request.direction = ResolveActionDirection(profile, context.action, text, targetOverride);
+    request.direction = ResolveActionDirection(profile, context.action, text, targetOverride, sourceOverride);
     request.status = FillMessages(profile, text, &request);
     if (!request.ok()) return request;
     if (profile.backend == TranslationBackend::OpenAI) {
@@ -296,8 +298,8 @@ PreparedRequest Preview(const ExecutionContext& context, const std::wstring& tex
 }
 
 PreparedRequest Prepare(const ExecutionContext& context, const std::wstring& text,
-                        std::optional<Language> targetOverride) {
-    PreparedRequest request = Preview(context, text, targetOverride);
+                        std::optional<Language> targetOverride, std::optional<Language> sourceOverride) {
+    PreparedRequest request = Preview(context, text, targetOverride, sourceOverride);
     if (!request.ok()) return request;
     request.status = ResolveEndpoint(context, &request.finalUrl);
     if (!request.ok()) {

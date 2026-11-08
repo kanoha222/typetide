@@ -151,6 +151,21 @@ void TestOverrideReachesPrompt() {
           "retarget changes only the target");
 }
 
+void TestSourceOverrideReachesPrompt() {
+    const execution::ContextPtr context =
+        execution::Freeze(CustomProfile(TranslationBackend::OpenAI, kCustomTemplate),
+                          ShortcutAction::ForeignPopup, MakeConnection());
+    const PreparedRequest detected = execution::Prepare(*context, kUndetectable);
+    const PreparedRequest chosen = execution::Prepare(*context, kUndetectable, std::nullopt, Language::Vietnamese);
+    if (!CheckPrepared(detected, "undetected source prepares") ||
+        !CheckPrepared(chosen, "chosen source prepares")) return;
+    Check(chosen.system == "Translate Vietnamese into English politely.",
+          "a chosen source is rendered into the template");
+    Check(chosen.direction.source == Language::Vietnamese && chosen.direction.target == Language::English,
+          "choosing the source keeps the target");
+    Check(chosen.cacheIdentity != detected.cacheIdentity, "a chosen source never reuses another source's cache entry");
+}
+
 void TestFreezeIsImmutable() {
     TranslationProfile profile = CustomProfile(TranslationBackend::OpenAI, kCustomTemplate);
     execution::ConnectionSnapshot connection = MakeConnection();
@@ -261,6 +276,7 @@ void RunRequestTests() {
     TestThinkRetryBody();
     TestRawTextIsNeverTouched();
     TestOverrideReachesPrompt();
+    TestSourceOverrideReachesPrompt();
     TestFreezeIsImmutable();
     TestPreviewNeedsNoConnection();
     TestOllamaMissingPieces();

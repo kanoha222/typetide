@@ -17,6 +17,7 @@ enum class ReplaceOutcome {
     AbortedStale,          // a newer translation superseded this one before input was committed
     AbortedTargetChanged,  // the captured window or its focused control is no longer in front
     ClipboardUnavailable,  // the clipboard could not be saved or did not hold our text: no input
+    TriggerStillPressed,   // the triggering click or shortcut was still held after 2 s: no input
 };
 
 /// 用译文替换（异步，立即返回）。selectAll=true 时先 Ctrl+A 全选（整框改写）。

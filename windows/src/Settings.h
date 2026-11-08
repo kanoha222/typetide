@@ -35,6 +35,9 @@ struct Hotkey {
     bool operator==(const Hotkey&) const = default;
 };
 
+inline constexpr Hotkey kDefaultReadShortcut{MOD_ALT, 'D'};
+inline constexpr Hotkey kDefaultRewriteShortcut{MOD_CONTROL | MOD_SHIFT, 'R'};
+
 struct SettingsSnapshot {
     ProfileConfiguration profileConfig;
     uint64_t connectionEpoch = 0;
@@ -71,8 +74,8 @@ struct SettingsData {
     TranslationDirection rewriteDirection = TranslationDirection::Auto;
 
     // 快捷键
-    Hotkey readShortcut{MOD_ALT, 'D'};
-    Hotkey rewriteShortcut{MOD_ALT, 'R'};
+    Hotkey readShortcut = kDefaultReadShortcut;
+    Hotkey rewriteShortcut = kDefaultRewriteShortcut;
     ShortcutAction readShortcutAction = ShortcutAction::SmartPopup;
     ShortcutAction rewriteShortcutAction = ShortcutAction::SmartReplace;
 

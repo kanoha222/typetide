@@ -133,6 +133,7 @@ bool IsValidLanguage(Language l) {
     case Language::Russian:
     case Language::Portuguese:
     case Language::Indonesian:
+    case Language::Vietnamese:
         return true;
     }
     return false;
