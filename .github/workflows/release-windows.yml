@@ -55,6 +55,30 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build-release.ps1
           exit $LASTEXITCODE
 
+      - name: Upgrade over a running copy (setup must close TypeTide)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = "windows/build/TypeTide-Setup-$env:VERSION.exe"
+          $dir = Join-Path $env:RUNNER_TEMP 'typetide-upgrade'
+          $env:TYPETIDE_DATA_DIR = Join-Path $env:RUNNER_TEMP 'typetide-upgrade-data'
+          New-Item -ItemType Directory -Force -Path $env:TYPETIDE_DATA_DIR | Out-Null
+          function Install([string]$log) {
+            $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"",
+                           '/MERGETASKS=!autostart', "/LOG=`"$log`"")
+            $p = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "setup exited with $($p.ExitCode)" }
+          }
+          Install (Join-Path $env:RUNNER_TEMP 'setup-install.log')
+          $app = Start-Process -FilePath (Join-Path $dir 'TypeTide.exe') -PassThru
+          Start-Sleep -Seconds 5
+          if ($app.HasExited) { throw "the installed TypeTide exited by itself (exit $($app.ExitCode))" }
+          # The same installer again while TypeTide runs: it must close the app and replace its files.
+          Install (Join-Path $env:RUNNER_TEMP 'setup-upgrade.log')
+          if (-not $app.WaitForExit(10000)) { throw 'setup finished but the running TypeTide is still alive' }
+          Write-Output 'Setup closed the running TypeTide and upgraded it in place.'
+
       - name: Upload installer and portable zip
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
